@@ -90,8 +90,10 @@ public class CallbackBridge {
             holdingNumlock, holdingShift;
 
     // GLFW direct gamepad 共享缓冲
-    public static final ByteBuffer sGamepadButtonBuffer;
-    public static final FloatBuffer sGamepadAxisBuffer;
+    public static final ByteBuffer sGamepadButtonBuffer =
+            ByteBuffer.allocateDirect(8).order(ByteOrder.LITTLE_ENDIAN);
+    public static final FloatBuffer sGamepadAxisBuffer =
+            ByteBuffer.allocateDirect(8).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer();
     public static boolean sGamepadDirectInput = false;
     // Use a weak reference here to avoid possibly statically referencing a Context.
 
@@ -391,6 +393,26 @@ public class CallbackBridge {
     @CriticalNative
     public static native void nativeSetUseInputStackQueue(boolean useInputStackQueue);
 
+    // setupBridgeWindow 声明已存在于 FCL main 原版（445 行附近）
+
+    // 剪贴板桥（libpojavexec_awt 的 JNI_OnLoad GetStaticMethodID 目标）
+
+    /** AWT 剪贴板写入（由 pojavexec_awt 调用） */
+    public static void putClipboardData(String data, String mimeType) {
+        ClipboardManager cm = GLOBAL_CLIPBOARD;
+        if (cm == null || data == null) return;
+        ClipData clip = "text/html".equals(mimeType)
+                ? ClipData.newHtmlText("AWT Paste", data, data)
+                : ClipData.newPlainText("AWT Paste", data);
+        cm.setPrimaryClip(clip);
+    }
+
+    /** AWT 剪贴板读取（由 pojavexec_awt 调用） */
+    public static void querySystemClipboard() {
+        // pojavexec_awt 的 JNI_OnLoad 需要此声明存在（符号配对）；
+        // 实际剪贴板数据由 accessAndroidClipboard 通道交换
+    }
+
     @CriticalNative
     private static native boolean nativeSendChar(char codepoint);
 
@@ -428,9 +450,4 @@ public class CallbackBridge {
     private static native ByteBuffer nativeCreateGamepadButtonBuffer();
     private static native ByteBuffer nativeCreateGamepadAxisBuffer();
 
-    static {
-        System.loadLibrary("pojavexec");
-        sGamepadButtonBuffer = nativeCreateGamepadButtonBuffer();
-        sGamepadAxisBuffer = nativeCreateGamepadAxisBuffer().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer();
     }
-}

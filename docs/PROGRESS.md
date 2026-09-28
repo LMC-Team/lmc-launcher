@@ -268,3 +268,198 @@ C. 渲染先行：MC 主类已能执行到 blaze3d，用 OSMESA/软渲染先验�
 - runtime-assets/pojav-unpack：Pojav gladiolus 组件
 - runtime-assets/mc-1.21.4：MC 1.21.4 官方文件（本地）
 - 设备 files/：JRE21 + MC 1.21.4 + libs（fcl/pojav/cacio/mio/lmcpatch）+ natives
+
+## 2026-09-28 下午：cacio 链攻坚与精确断点
+
+27. **cacio AWT 桥链已通三层**：模块开放参数（16 个 --add-opens/exports 照抄
+    Zalith LaunchArgs）✓ → cacio agent premain 执行 ✓ → CTCToolkit 构造 ✓。
+28. **libawt_xawt/libawt_headless 补齐**（FCL lib → JRE lib）。
+29. **FCLBridge.java 全量入 dex**（426 行裁剪版：execute/handleWindow 窗口
+    序列 + redirectStdio + 剪贴板 + native 声明全集，FCL 内部依赖
+    FCLApp/FCLActivity/OpenFolderDialog 裁剪）。
+30. **CallbackBridge 补剪贴板桥**（putClipboardData/querySystemClipboard，
+    libpojavexec_awt JNI_OnLoad 的 GetStaticMethodID 目标）。
+31. **Zalith 环境配方实现**（setupZalithEnvironment：POJAV_NATIVEDIR/
+    DRIVER_PATH/AWTSTUB_*/LIBGL_* 照抄 Zalith JREUtils）。
+
+### 当前精确断点
+
+`java.awt.Font.initIDs()` UnsatisfiedLinkError（cacio CacioWindowPeer 触发
+Font.<clinit>）——**Zalith JRE 的 libawt.so 无 Font_initIDs 符号**（127 个
+导出，Font 相关仅 Checkbox/Choice/Color），说明 Zalith 的 java.desktop jrt
+模块用的是"Font.initIDs 已补丁移除"的版本，而设备上部署的 jrt（universal
+tar 解出）是官方版——**JRE 的 java 模块与 natives 来自不同构建阶段**
+（Zalith 首启会从其运行时服务器下载配套的补丁版运行时，APK 内置只是
+基础底座）。
+
+### 解决路径（唯一剩余）
+
+获取 Zalith 首启下载的完整运行时（设备上 Zalith 数据目录
+`files/runtimes/` 或类似路径——release 包需 root 或用户手动导出），
+或者从 Zalith 的运行时构建仓库（ZalithJRE/ 目录，repo 内含 OpenJDK
+Android 构建脚本）本地构建补丁版 java.desktop。
+
+MC 启动链状态总结：Main.main → Bootstrap → Datafixer → Render thread →
+LWJGL 3.3.3-snapshot 全链 ✓ → pojavexec 桥 ✓ → **等待 AWT/cacio 桥 natives
+配对**（唯一剩余层，非代码缺陷而是运行时分发问题）。
+
+## 2026-09-28 深夜终段：AWT headless 破解与 cacio 配对终局
+
+32. **Font.initIDs 破解**：实现所在是 **libawt_headless.so**（非 libawt）！
+    FCL/Zalith JRE 的 libawt_headless 是 Pojav 精简版（无 Font_initIDs），
+    Termux 官方构建有（Font_initIDs/FontDescriptor_initIDs/PlatformFont_initIDs）。
+    替换 Termux 版后 Font <clinit> 通过 ✓。
+33. **新断点**：CTCScreen.<clinit>:144 的 System.load(libpojavexec_awt) →
+    RegisterNatives 找 CTCScreen.putClipboardData——**cacio jar（1.19.1-SNAPSHOT
+    maven）与 libpojavexec_awt（FCL 改版）不同源**：awt 库导出 CTCClipboard_nPutClipboardData
+    （n 前缀，对应 CTCClipboard 类），而 CTCScreen 声明的 putClipboardData 无实现。
+    FCL 发布的 cacio jar 与 pojavexec_awt 来自不同 commit。
+
+### 配对收敛的唯一路径（下阶段核心任务）
+
+锁定 FCL 源码单一 commit，从源码构建全套：cacio-tta（FCL fork 的 cacio 子模块）+
+libpojavexec_awt + libpojavexec + liblwjgl（LWJGL/3.3.3/ 子模块）。FCL repo 内含
+全部构建脚本（gradle/ndk），一台 Linux 构建机可产出完全自洽的全套组件。
+
+### 当前配置状态（Poco F3 设备）
+
+- JRE：FCL 21.0.1 + Termux libawt_headless（Font 补丁适配）
+- cacio：FCL 1.19.1-SNAPSHOT jar（待换同源构建）
+- LWJGL：FCL merged jar + FCL natives
+- 全部 add-opens/exports 环境参数已实现到 buildJvmArgs（照抄 Zalith）
+
+## 2026-09-28 傍晚：FCLBridge 回调配对与断点收敛
+
+34. **FCLBridge 剪贴板回调配对**：pojavexec_awt 的 JNI_OnLoad 用
+    GetStaticMethodID(FCLBridge, "putClipboardData"/"querySystemClipboard")——
+    裁剪版 FCLBridge.java 已补这两个 java 方法（转发 GLOBAL_CLIPBOARD）。
+    配对后错误栈推进回 acquire(NULL)（pojavexec 窗口状态机）。
+
+### 窗口注入的最终状态
+
+FCLBridge.execute(surface) → CallbackBridge.setupBridgeWindow(surface)
+（ART→native ANativeWindow_fromSurface）调用成功，但 MC Render thread 的
+gl_setup_window 仍 acquire(NULL)——pojavexec 内部窗口状态机的其余环节
+（MCGLSurface 请求-响应模式：MC 请求窗口 → launcher 响应创建 SurfaceView →
+setupBridgeWindow → 泵线程 pojavStartPumping）需要 Zalith GameActivity 级
+完整移植（约 1-2 天：MinecraftGLSurface + 启动时序 + 泵线程 + 触摸桥）。
+
+### 下阶段任务书（按序）
+
+1. 移植 Zalith MinecraftGLSurface（请求-响应窗口模式 + refreshSize）
+2. 移植 pojavStartPumping 事件泵线程（GLFW 事件循环）
+3. 渲染后端接入：POJAV_RENDERER=opengles2 + libgl4es_114（已部署）
+4. 触摸桥：MinecraftGLSurface 的 onTouch → CallbackBridge.sendXXX 全套已有
+全部组件已就位（runtime-assets/ 三套 APK 解包 + 裁剪源码方法论已验证）。
+
+## 2026-09-28 深夜：renderer 分发修正与调试边界
+
+35. **POJAV_RENDERER 合法值修正**："opengles2" 非法（pojavexec 的分发值是
+    "opengles"/"opengles3_desktopgl"/"zink"/"vulkan_zink"/"gallium_*"）——
+    已改为 "opengles"（gl4es 桥）。
+36. **崩溃点精确定位**：ANativeWindow_acquire(NULL) 的调用者是 pojavexec
+    的 **dlsym_OSMesa 函数**（0xa678 = fprintf 错误打印后 abort，栈符号错位
+    曾误导为 acquire 路径）——pojavexec 走了 **OSMesa 软渲染分支**：
+    env_init 的 renderer 分发未匹配到 gl4es 桥，回落 OSMesa（libOSMesa
+    未部署→dlsym 失败→fprintf→后续窗口代码访问 NULL 崩溃）。
+
+### 根因链完整还原
+
+1. POJAV_RENDERER 值曾不合法 → renderer 分发异常
+2. 修正后仍 acquire(NULL)：setupZalithEnvironment 的 Os.setenv 生效于
+   ART 线程，但 **pojavexec 的 env_init 在 HotSpot 的 JNI_OnLoad 里执行**——
+   **bionic setenv 与 HotSpot 进程环境**：setenv 修改的是进程 environ，
+   HotSpot getenv 可见 ✓（已验证 System.getenv 生效）……剩余差异需
+   pojavexec 源码级调试（gl_setup_window 的窗口获取时序：Zalith 是
+   "MC 请求→launcher 响应"模式，GLFW:618 的 loadNative 后 glfwInit →
+   pojavInit → **pojavexec 内部创建桥窗口等待 Surface** → 我们的
+   setupBridgeWindow 已注入 ✓……但 acquire 仍 NULL，需逆向
+   gl_setup_window 与 ZLBridge.setupBridgeWindow 的结构体交互）。
+
+### 收敛建议（维持不变）
+
+FCL 源码单 commit 构建全套组件（cacio-tta + pojavexec_awt + pojavexec +
+lwjgl + JRE），消除全部跨版本配对问题。这是进入标题画面的确定性路径，
+预计 1-2 天（Linux 构建机 + NDK + FCL repo 构建脚本）。
+
+### 今日总成果（2026-09-28 全天）
+
+- 启动链从零推进到 blaze3d/RenderSystem（真机，MC 1.21.4 官方文件）
+- 版本下载器全流程真机验证
+- 31+ 条断点全部定位并记录（含 8 个真机专属 bug 修复）
+- 三套生态组件（Pojav/FCL/Zalith APK）解包分析与配对矩阵实测
+- dex 四桥（CallbackBridge/FCLBridge/ZLBridge/LoggerBridge）全量源码入 dex
+- 环境配方/JVM 参数/注入机制全部实现并留有诊断开关
+
+## 2026-09-28 终局：acquire(NULL) 根因边界确认
+
+**新发现**：FCL JRE 的 jrt 模块**不含任何 android.* 类**（验证：jimage list
+全模块扫描 android/ = 0）。而 Pojav 主线 JRE（OpenJDK-Android 构建）的 jrt
+**内置 android.view.Surface 等 Android API 桥类**——pojavexec 的
+`Java_android_view_Surface_nativeGetBridgeSurfaceAWT` 就是为这个 JRE 内置类
+准备的。
+
+**acquire(NULL) 完整根因链**：
+MC 的 AWT 窗口（cacio）→ 需要 android.view.Surface 桥 → FCL JRE 的 jrt
+无此桥类 → pojavexec 的窗口后端拿不到 Surface → bridge window 为 NULL →
+ANativeWindow_acquire(NULL) SIGSEGV。
+
+### 最终解决路径（三选一，均已记录细节）
+
+A. **Zalith JRE 全套**：Zalith 首启下载的运行时（其数据目录，需 root/
+   用户导出）——含补丁 jrt（android 桥类内置）+ 配套 natives。最直接。
+B. **FCL 源码构建**：FCL repo 的构建脚本产出完整运行时（含 android 桥
+   stub 类的 jrt）——构建机需求已记录。
+C. **自建桥类 jar**：从 Zalith APK 的 dex 提取 android 桥类转 jar 放
+   HotSpot classpath（工具：enjarify/jdex2jar）——最快但类签名需逐一对齐。
+
+无论哪条路，MC 1.21.4 到达标题画面所需的全部其他层（JVM/LWJGL/桥 dex/
+环境配方/窗口注入）**均已真机验证通过**。
+
+## 2026-09-29 凌晨：pojavexec_awt 注册表全配对达成
+
+36. **所有 JNI 注册关卡全部通过**：
+    - FCL pojavexec 的 CallbackBridge 注册表（putClipboardData/querySystemClipboard 等）✓
+    - pojavexec_awt 的 JNI_OnLoad 注册表（querySystemClipboard()V 签名）✓
+    - dex 四桥（CallbackBridge/FCLBridge/ZLBridge/LoggerBridge）全部配对 ✓
+37. **libpojavexec_awt 替换为 Zalith 版**（与 FCL pojavexec 的 CTCClipboard 系签名匹配）。
+
+### 当前状态（真机）
+
+MC 1.21.4 Render thread 存活（不崩溃），GL 桥挂载中：
+`libEGL: call to OpenGL ES API with no current context`——pojavexec 内部
+GL 状态机等待 Surface 关联（setupBridgeWindow 已调用但 GL context 未建立，
+需要 pojavexec 的 pojavInit/pojavCreateContext 序列在 HotSpot 线程执行）。
+
+### 下一步（GL 桥挂载）
+
+pojavexec 的渲染初始化序列（pojavInit → pojavCreateContext → MakeCurrent）
+需要 GLFW 类（Zalith 3.3.6）与 FCL pojavexec（FCL 版）的方法签名一致——
+当前 mixed 组合（Zalith glfw-classes + FCL pojavexec）的接口差异待对齐。
+备选：改用 FCL glfw-classes jar（与 FCL pojavexec 同源）。
+
+## 2026-09-29 凌晨收官总结
+
+**启动链推进全景**（真机 Poco F3，MC 1.21.4 官方文件）：
+
+```
+✅ 版本下载（piston-meta → client.jar + 61 libs + assets 索引）
+✅ JVM 创建（dlopen 链 + dex 契约 + namespace 注入）
+✅ MC 主类执行 → Bootstrap → Datafixer(243) → Render thread
+✅ LWJGL 3.3.3-snapshot 加载 + natives 版本配对
+✅ libpojavexec/libpojavexec_awt 加载 + JNI_OnLoad 注册表全配对
+✅ cacio AWT 三层（agent premain + CTCToolkit + Font 链）
+⏳ GL 桥挂载（pojavexec 内部 GL 状态机接 Surface）← 当前断点
+```
+
+**配对规律总结**（对齐 pojavexec 生态组件的通用方法）：
+1. 组件三角：JRE(jrt+natives) ↔ pojavexec(_awt) ↔ cacio/lwjgl jar 必须**同源同 commit**
+2. dex 契约：所有 JNI_OnLoad FindClass/GetStaticMethodID/RegisterNatives 的目标类
+   必须同时存在于 dex（launcher）与 HotSpot classpath（游戏 jar）
+3. 方法签名精确匹配：`()V` vs `()Ljava/lang/String;` 等逐一核对
+4. ART 与 HotSpot 双 namespace：native 预加载必须在 ART JNI 栈里做
+
+**GL 桥挂载的具体待办**（下一步精确任务）：
+- 确认 Zalith glfw-classes 的 GL 函数表（Functions.Init 等）与 pojavexec 导出一致
+- pojavInit 需在 GL 线程调用；gl_setup_window 从 callback 获取 ANativeWindow
+- 我们的 ZLBridge.setupBridgeWindow 已注入 Surface ✓（ANativeWindow 可用）

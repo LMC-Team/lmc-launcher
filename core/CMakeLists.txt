@@ -34,10 +34,17 @@ add_compile_options(-Wno-missing-field-initializers)
 option(LMC_USE_MIMALLOC "使用 mimalloc 替换默认分配器" ON)
 if(LMC_USE_MIMALLOC)
     include(FetchContent)
-    FetchContent_Declare(mimalloc
-        URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.7.tar.gz
-        # 上线前建议补充 URL_HASH 固定校验和（sha256sum 该 tar.gz）
-    )
+    # 优先仓库内 vendored tarball（GitHub 直连不稳，避免构建期外网依赖）
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mimalloc-v2.1.7.tar.gz")
+        FetchContent_Declare(mimalloc
+            URL ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mimalloc-v2.1.7.tar.gz
+        )
+    else()
+        FetchContent_Declare(mimalloc
+            URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.7.tar.gz
+            # 上线前建议补充 URL_HASH 固定校验和（sha256sum 该 tar.gz）
+        )
+    endif()
     set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)

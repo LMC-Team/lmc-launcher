@@ -49,8 +49,11 @@ bool buildJvmOptions(const std::string& javaHome,
     }
 
     // ---- 2. AppCDS 类数据共享（用户未指定归档文件时启用默认位置）----
+    // 注意：CDS dumping 与 -javaagent 冲突（需 AllowArchivingWithJavaAgent），
+    // 侧载了 agent（如 cacio）时跳过 CDS
     if (!hasArgWithPrefix(userArgs, "-XX:SharedArchiveFile") &&
-        !hasArgWithPrefix(userArgs, "-Xshare:off")) {
+        !hasArgWithPrefix(userArgs, "-Xshare:off") &&
+        !hasArgWithPrefix(userArgs, "-javaagent:")) {
         const std::string jsaPath = rt.cacheDir + "/app.jsa";
         addStr(store, "-XX:SharedArchiveFile=" + jsaPath);
         addStr(store, "-XX:+AutoCreateSharedArchive"); // 首次运行自动生成 .jsa

@@ -156,4 +156,7 @@ object NativeBridge {
         synchronized(_thermalListeners) { _thermalListeners.add(listener) }
         return { synchronized(_thermalListeners) { _thermalListeners.remove(listener) } }
     }
+
+    /** 游戏目录的静态访问（UI 层日志读取用） */
+    var filesDirCompat: String = ""
 }

@@ -13,8 +13,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface as M3Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -35,6 +40,20 @@ fun GameScreen(onExit: () -> Unit) {
     val state by vm.state.collectAsState()
     val controlVisible by vm.controlVisible.collectAsState()
     val controlOpacity by vm.controlOpacity.collectAsState()
+
+    // 进入游戏画面锁定横屏（GL context 不因旋转重建）
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        activity?.requestedOrientation =
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    }
+    // 退出时恢复传感器方向
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            activity?.requestedOrientation =
+                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // ---- 游戏渲染层：SurfaceView（绕过 Compose 绘制，零合成开销） ----
@@ -108,5 +127,31 @@ fun GameScreen(onExit: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+
+        // ---- 游戏日志悬浮框（左上角，可展开/收起，5 秒刷新） ----
+        val gameLogLines = remember { mutableStateListOf<String>() }
+        var logExpanded by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            val logFile = java.io.File(
+                com.lemwoodmc.launcher.bridge.NativeBridge.filesDirCompat,
+                "minecraft/logs/latest.log")
+            while (true) {
+                val lines = readLogTail(logFile)
+                gameLogLines.clear()
+                gameLogLines.addAll(lines)
+                kotlinx.coroutines.delay(3000)
+            }
+        }
+        if (gameLogLines.isNotEmpty()) {
+            LogOverlay(
+                lines = gameLogLines,
+                expanded = logExpanded,
+                onToggleExpand = { logExpanded = !logExpanded },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 84.dp, start = 8.dp),
+            )
+        }
     }
 }
+

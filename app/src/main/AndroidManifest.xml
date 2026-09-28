@@ -47,6 +47,7 @@
         <activity
             android:name=".game.GameActivity"
             android:exported="false"
+            android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density"
             android:resizeableActivity="false"
             android:theme="@style/Theme.LMC.Game"

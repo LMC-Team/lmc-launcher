@@ -25,8 +25,6 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
-        // 注入 Activity 引用（Pojav 生态 CallbackBridge 的 UI 回调依赖）
-        com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.injectActivity(this)
         setContent {
             LmcTheme {
                 LmcNavHost()

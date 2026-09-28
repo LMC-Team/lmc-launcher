@@ -21,6 +21,12 @@ public final class LmcPojavBridgeHelper {
     }
 
     /**
+     * FCL 窗口启动序列：加载 libfcl/pojavexec_awt/pojavexec（ART 注册）→
+     * FCLBridge.execute → redirectStdio → CallbackBridge.setupBridgeWindow
+     * （ANativeWindow 注入 pojavexec，GLFW 后端 acquire 用）。
+     */
+
+    /**
      * 把游戏 Surface 注入 libpojavexec（GLFW 窗口后端）：
      * CallbackBridge.setupBridgeWindow(Object) → native 侧
      * ANativeWindow_fromSurface 保存。不注入则 glfwCreateWindow 后
@@ -30,6 +36,27 @@ public final class LmcPojavBridgeHelper {
         org.lwjgl.glfw.CallbackBridge.windowWidth = width;
         org.lwjgl.glfw.CallbackBridge.windowHeight = height;
         org.lwjgl.glfw.CallbackBridge.setupBridgeWindow(surface);
+    }
+
+    /**
+     * FCL 窗口启动序列：加载 libfcl/pojavexec_awt/pojavexec（ART 注册）→
+     * FCLBridge.execute → redirectStdio → CallbackBridge.setupBridgeWindow
+     * （ANativeWindow 注入 pojavexec，GLFW 后端 acquire 用）。
+     */
+    public static void fclWindowSequence(String nativesDir, android.view.Surface surface, String logPath) {
+        loadFclLibs(nativesDir);
+        com.tungsten.fclauncher.bridge.FCLBridge bridge = new com.tungsten.fclauncher.bridge.FCLBridge();
+        bridge.setLogPath(logPath);
+        bridge.execute(surface, new com.tungsten.fclauncher.bridge.FCLBridge.FCLBridgeCallback() {
+            @Override public void onCursorModeChange(int mode) {}
+            @Override public void onLog(String log) {}
+            @Override public void onExit(int code) {}
+        });
+    }
+
+        /** JVM 启动：VMLauncher.launchJVM（pojavexec 封装的 JVM 入口） */
+    public static int launchJVM(String[] args) {
+        return com.oracle.dalvik.VMLauncher.launchJVM(args);
     }
 
     /** Zalith 原生窗口注入路径：ZLBridge.setupBridgeWindow + 窗口尺寸同步 */
@@ -60,6 +87,22 @@ public final class LmcPojavBridgeHelper {
      * org.lwjgl.glfw.CallbackBridge 注册桥方法，必须先于 HotSpot 启动完成。
      */
     public static void loadPojavExec(String nativesDir) {
+        System.load(nativesDir + "/libpojavexec.so");
+    }
+
+    /** CallbackBridge 类初始化 + Activity 注入（需在 libpojavexec 加载后、HotSpot 启动前） */
+    public static void initCallbackBridge(android.app.Activity activity) {
+        // 触发 CallbackBridge.<clinit>（此时 loadLibrary 已被裁剪为 no-op，无异常）
+        Class<?> cls = org.lwjgl.glfw.CallbackBridge.class;
+        android.util.Log.i("LMC", "CallbackBridge 初始化完成: " + cls.getName());
+    }
+
+    /** ART 侧加载 libfcl.so + libpojavexec_awt.so + libpojavexec.so（FCLBridge 的 native 实现；
+     *  pojavexec 必须经 System.load 注册进 ART libraries 列表，
+     *  否则 CallbackBridge.setupBridgeWindow 的 native 解析失败） */
+    public static void loadFclLibs(String nativesDir) {
+        System.load(nativesDir + "/libfcl.so");
+        System.load(nativesDir + "/libpojavexec_awt.so");
         System.load(nativesDir + "/libpojavexec.so");
     }
 

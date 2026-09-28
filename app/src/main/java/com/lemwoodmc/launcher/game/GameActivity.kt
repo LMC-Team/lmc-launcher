@@ -1,6 +1,7 @@
 package com.lemwoodmc.launcher.game
 
 import android.app.NativeActivity
+import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
@@ -18,7 +19,7 @@ import com.lemwoodmc.launcher.bridge.NativeBridge
 import com.lemwoodmc.launcher.ui.game.ControlOverlay
 
 /**
- * 游戏 Activity —— 极致性能路径（NativeActivity）。
+ * 游戏 Activity —— 极致性能路径（NativeActivity），锁定横屏。
  *
  * 与 SurfaceView 内嵌路径（GameScreen）的区别：
  *  - 框架把 ANativeWindow 直接下发给 native 渲染桥（无 Surface/SurfaceHolder 中转）；
@@ -37,6 +38,8 @@ class GameActivity : NativeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+        // MC 横屏游玩：锁定传感器横屏（旋转时 Surface 不重建，GL context 保持）
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 

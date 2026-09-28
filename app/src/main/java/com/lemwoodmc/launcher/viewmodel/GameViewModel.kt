@@ -120,12 +120,17 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             // ANativeWindow_acquire(NULL) SIGSEGV（真机踩坑）。
             // 必须主线程 + 在 HotSpot 启动前（ART 环境 JIT 交互）。
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                // Zalith 启动配方：环境变量（env_init 读取 POJAV_* 系列）
+                // Zalith/FCL 启动配方：环境变量（env_init 读取 POJAV_* 系列）
                 setupZalithEnvironment(nativesDir, width, height)
-                // Zalith 窗口注入：native 层 dlsym 直接调用 pojavexec 的
-                // ZLBridge_setupBridgeWindow C 符号（绕过 ART 方法解析）
-                runCatching { NativeBridge.nativeZalithSetupBridgeWindow(nativesDir.absolutePath, surface) }
-                    .onFailure { Log.w("LMC", "窗口注入失败: ${it.message}") }
+                // FCL 窗口启动序列：System.load 注册 libfcl/pojavexec_awt/pojavexec
+                // → FCLBridge.execute → redirectStdio → CallbackBridge.setupBridgeWindow
+                //   （ANativeWindow 注入 pojavexec，GLFW 后端 acquire 用）
+                runCatching {
+                    com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.fclWindowSequence(
+                        nativesDir.absolutePath, surface,
+                        File(filesDir, "minecraft/logs/fcl_bridge.log").absolutePath)
+                    Log.i("LMC", "FCL 窗口注入完成")
+                }.onFailure { Log.w("LMC", "FCL 窗口注入失败: ${it.message}") }
             }
 
             // 极致性能模式：跳过 JVM，直接运行 GraalVM Native Image 产物（预留路径）
@@ -141,10 +146,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
 
             _state.value = _state.value.copy(phase = Phase.JVM_STARTING)
             val args = buildJvmArgs(cfg, filesDir, width, height)
-            // MC 主类需要最小启动参数（gameDir/version/token/username）；
-            // 完整 args（assets、Demangle 等）由后续版本导入流程补全。
-            // Mio 包装器（FCL 生态）存在时：主类切为 mio.Wrapper，
-            // 真实主类插入 args[0]（其内部 loadClass(args[0]) 后反射调 main）
+            // MC 主类需要最小启动参数（gameDir/version/token/username）
             val baseArgs = if (cfg.gameArgs.isEmpty()) {
                 listOf(
                     "--gameDir", mcHome.absolutePath,
@@ -153,18 +155,20 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
                     "--username", "Player",
                 )
             } else cfg.gameArgs
+            // Mio 包装器（FCL 生态）存在时：主类切为 mio.Wrapper
             val mioJar = File(filesDir, "versions/${cfg.versionId}/libs/mio/MioLaunchWrapper.jar")
             val (finalMainClass, finalArgs) = if (mioJar.isFile) {
                 "mio.Wrapper" to (listOf(cfg.mainClass) + baseArgs)
             } else {
                 cfg.mainClass to baseArgs
             }
-            val code = NativeBridge.nativeCreateJvm(
-                javaHome = File(filesDir, "runtime/jre21").absolutePath,
-                jvmArgs = args.toTypedArray(),
-                mainClass = finalMainClass,
-                mainArgs = finalArgs.toTypedArray(),
-            )
+            // 启动路径：VMLauncher.launchJVM（pojavexec 的 JVM 封装入口）
+            // args = java 可执行占位 + JVM 参数 + 主类 + 游戏参数
+            // （pojavexec 内部解析 JVM 参数、dlopen libjvm、CreateJavaVM、调 main）
+            val launcherArgs = (listOf(
+                File(filesDir, "runtime/jre21/bin/java").absolutePath
+            ) + args + listOf(finalMainClass) + finalArgs).toTypedArray()
+            val code = com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.launchJVM(launcherArgs)
             NativeBridge.nativeStopThermalMonitor()
             _state.value = _state.value.copy(
                 phase = if (code == 0) Phase.EXITED else Phase.CRASHED,
@@ -248,8 +252,10 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         // Termux JRE 的 C2 编译器在部分 OEM 内核上会生成崩溃代码（SIGSEGV in JIT cache），
         // 先限定 C1 编译；换 Pojav 补丁版 JRE 后可移除
         add("-XX:TieredStopAtLevel=1")
-        // AppCDS：首次运行自动生成共享类存档，后续启动直接 mmap
-        if (cfg.appCds) {
+        // AppCDS：首次运行自动生成共享类存档，后续启动直接 mmap。
+        // 与 -javaagent 冲突（CDS dumping 禁止 java agent），cacio agent 存在时跳过
+        val hasJavaAgent = File(filesDir, "versions/${cfg.versionId}/libs/cacio/cacio-agent.jar").isFile
+        if (cfg.appCds && !hasJavaAgent) {
             add("-XX:SharedArchiveFile=${File(filesDir, "cache/app.jsa").absolutePath}")
             add("-XX:+AutoCreateSharedArchive")
             add("-Xshare:auto")
@@ -299,9 +305,27 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         add("-Dswing.defaultlaf=javax.swing.plaf.nimbus.NimbusLookAndFeel")
         add("-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit")
         add("-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment")
-        // cacio agent（JRE21 用 cacio17 版本）
+        // cacio agent + 模块开放（照抄 Zalith LaunchArgs 172-199 行）
         val cacioAgent = File(versionDir, "libs/cacio/cacio-agent.jar")
         if (cacioAgent.isFile) add("-javaagent:${cacioAgent.absolutePath}")
+        listOf(
+            "--add-exports=java.desktop/java.awt=ALL-UNNAMED",
+            "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED",
+            "--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED",
+            "--add-exports=java.desktop/sun.java2d=ALL-UNNAMED",
+            "--add-exports=java.desktop/java.awt.dnd.peer=ALL-UNNAMED",
+            "--add-exports=java.desktop/sun.awt=ALL-UNNAMED",
+            "--add-exports=java.desktop/sun.awt.event=ALL-UNNAMED",
+            "--add-exports=java.desktop/sun.awt.datatransfer=ALL-UNNAMED",
+            "--add-exports=java.desktop/sun.font=ALL-UNNAMED",
+            "--add-exports=java.base/sun.security.action=ALL-UNNAMED",
+            "--add-opens=java.base/java.util=ALL-UNNAMED",
+            "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
+            "--add-opens=java.desktop/sun.font=ALL-UNNAMED",
+            "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED",
+            "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+            "--add-opens=java.base/java.net=ALL-UNNAMED",
+        ).forEach { add(it) }
         // cacio 全部 jar 上 bootclasspath（JDK9+ 用 -Xbootclasspath/a）
         val cacioDir = File(versionDir, "libs/cacio")
         if (cacioDir.isDirectory) {
@@ -347,7 +371,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         e.put("AWTSTUB_WIDTH", width.toString())
         e.put("AWTSTUB_HEIGHT", height.toString())
         // 渲染后端：gl4es（LIBGL_ES=2 家族，gl4es 已部署 natives/）
-        e.put("POJAV_RENDERER", "opengles2")
+        e.put("POJAV_RENDERER", "opengles") // gl4es 桥（pojavexec 合法值）
         e.put("LIBGL_ES", "2")
         e.put("LIBGL_MIPMAP", "3")
         e.put("LIBGL_NOERROR", "1")

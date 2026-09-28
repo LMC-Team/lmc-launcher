@@ -307,7 +307,7 @@ Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativePreloadGameNatives(
     const std::string dir = toStdString(env, nativesDir);
     // 依赖序显式表（Zalith/FCL 组件）；遗漏的依赖会以 dlopen 报错形式出现在日志
     const std::vector<std::string> order = {
-        "libdriver_helper.so", "libpojavexec.so",
+        "libbytehook.so", "libandroidnsbypass.so", "libfcl.so", "libpojavexec.so",
         "liblwjgl.so", "liblwjgl_opengl.so", "liblwjgl_stb.so",
         "liblwjgl_tinyfd.so", "liblwjgl_nanovg.so", "liblwjgl_vma.so",
         "libshaderc.so", "libfreetype.so", "libopenal.so", "libgl4es_114.so",

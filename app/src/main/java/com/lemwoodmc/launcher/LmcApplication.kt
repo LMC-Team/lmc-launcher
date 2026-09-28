@@ -28,14 +28,7 @@ class LmcApplication : Application() {
             android.util.Log.e("LMC", "核心运行时初始化失败：设备不满足 ARM64 / Android 10+ 要求")
         }
 
-        // 注入剪贴板管理器 + ART 侧加载 pojavexec（Pojav 生态 CallbackBridge 的
-        // JNI 回调依赖；必须在 HotSpot 启动前完成，详见 LmcPojavBridgeHelper）
-        runCatching {
-            val nativesDir = java.io.File(filesDir, "versions/1.21.4/natives").absolutePath
-            com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.loadPojavExec(nativesDir)
-            com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.injectClipboard(
-                getSystemService(android.content.ClipboardManager::class.java)
-            )
-        }.onFailure { android.util.Log.w("LMC", "pojavexec 预加载失败: ${it.message}") }
+        // CallbackBridge 类的注入延迟到 GameViewModel.launchOnSurface
+        // （此时 java.library.path 已设置，libpojavexec 已可加载）
     }
 }
