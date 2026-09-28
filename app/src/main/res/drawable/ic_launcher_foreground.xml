@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 简单的立方体前景图标 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#4CAF50"
+        android:pathData="M54,26 L82,40 L54,54 L26,40 Z" />
+    <path android:fillColor="#2E7D32"
+        android:pathData="M26,40 L54,54 L54,84 L26,70 Z" />
+    <path android:fillColor="#66BB6A"
+        android:pathData="M82,40 L82,70 L54,84 L54,54 Z" />
+</vector>

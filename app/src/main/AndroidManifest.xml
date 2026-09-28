@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 性能相关：仅 arm64，Android 10+ -->
+    <uses-feature android:name="android.hardware.vulkan.version"
+        android:version="0x401000" android:required="true" /> <!-- Vulkan 1.0.1，供 Zink/Turnip 使用 -->
+    <uses-feature android:name="android.hardware.vulkan.level"
+        android:version="1" android:required="false" />
+    <uses-feature android:glEsVersion="0x00030000" android:required="false" /> <!-- gl4es 保底路径 -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_GAME_PLAYING" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <application
+        android:name=".LmcApplication"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:hardwareAccelerated="true"
+        android:largeHeap="false"
+        tools:targetApi="34">
+
+        <!-- 主界面：Compose 全套页面（主页 / 设置 / 版本管理 / 账户管理） -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.LMC">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            游戏进程 Activity（极致性能路径）：
+            基于 NativeActivity —— 框架把 AInputQueue 与 ANativeWindow 直接交给 native 层，
+            输入事件完全不经过 Java 侧。Compose 悬浮控制层由 GameComposeOverlayHost 以
+            ViewTree owner 注入方式叠加在其上，游戏运行时可整体隐藏实现 UI 零开销。
+        -->
+        <activity
+            android:name=".game.GameActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density"
+            android:resizeableActivity="false"
+            android:theme="@style/Theme.LMC.Game"
+            android:launchMode="singleTask">
+            <!-- NativeActivity 加载 liblmc_core.so 中的 ANativeActivity_onCreate 入口 -->
+            <meta-data android:name="android.app.lib_name" android:value="lmc_core" />
+        </activity>
+    </application>
+</manifest>

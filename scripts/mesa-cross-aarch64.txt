@@ -1,0 +1,22 @@
+# Mesa 交叉编译配置：aarch64 Android（NDK r27）
+# 供 scripts/build_mesa.sh 的 meson setup --cross-file 使用
+[binaries]
+c     = 'aarch64-linux-android29-clang'
+cpp   = 'aarch64-linux-android29-clang++'
+ar    = 'llvm-ar'
+nm    = 'llvm-nm'
+strip = 'llvm-strip'
+pkg-config = 'pkg-config'   # 本机 pkg-config，仅用于构建期探测
+
+# sysroot 由 NDK clang wrapper 自动注入，无需手动指定
+[built-in options]
+c_args        = ['-DANDROID', '-fPIC', '-march=armv8-a']
+cpp_args      = ['-DANDROID', '-fPIC', '-march=armv8-a']
+c_link_args   = ['-fuse-ld=lld', '-lm']
+cpp_link_args = ['-fuse-ld=lld', '-lm']
+
+[host_machine]
+system     = 'android'
+cpu_family = 'aarch64'
+cpu        = 'armv8-a'
+endian     = 'little'

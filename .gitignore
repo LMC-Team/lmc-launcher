@@ -1,0 +1,27 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+captures/
+
+# Kotlin / CMake 构建缓存
+.kotlin/
+.cxx/
+
+# 本地配置
+local.properties
+
+# 运行时资产（由 scripts/ 下载/构建，不入库）
+runtime-assets/
+*.jsa
+*.so
+!gradle/wrapper/gradle-wrapper.jar
+
+# 构建脚本产物
+scripts/build-*/
+scripts/out/
