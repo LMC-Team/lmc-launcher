@@ -729,3 +729,20 @@ WASD 移动(长按虚拟按键)                ✓
 游戏内时间/光照(白天→夕阳)             ✓
 温度预警横幅实时显示                     ✓
 ```
+
+## 2026-10-01 深夜:音效修复(#53)
+
+- **根因**:`nativeInitAudio` 生成的 alsoft.conf 写死 `drivers = aaudio`(9-28
+  的假设),但 Pojav 生态的 libopenal 只编译了 oboe/opensl/null/wave 后端
+  (ALSOFT_LOGLEVEL=3 诊断输出实锤:Supported backends 无 aaudio)
+  → 设备打开失败 → MC "Failed to open OpenAL device" 静音
+- **修复**:audio_backend.cpp 改 `drivers = oboe,opensl` + `[oboe]` 节
+  (mmap 探测结果/buffer-size 保留);GameViewModel 加 ALSOFT_LOGLEVEL=3
+  与 ALSOFT_CONF 环境变量(诊断通道保留)
+- **验证**:`OpenAL initialized on device Oboe Default` +
+  `Sound engine started`(48kHz Float32,256 voices,1ms 设备延迟)
+
+### 至此当日全景
+
+JVM → 主菜单(panorama) → 点击交互 → 进世界 → 视角/移动/挖掘 → **声音**。
+LMC 已是一只五脏俱全的 Minecraft 启动器。

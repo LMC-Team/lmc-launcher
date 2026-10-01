@@ -351,6 +351,12 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 大核亲和（pojavexec 内建支持，与 lmc 的 sched 层互补）
         e.put("POJAV_BIG_CORE_AFFINITY", "1")
+        // OpenAL 诊断：详细日志进 stderr（jvm_stderr.log）；配置文件直指设备路径
+        e.put("ALSOFT_LOGLEVEL", "3")
+        e.put(
+            "ALSOFT_CONF",
+            File(getApplication<Application>().filesDir, "openalsoft/alsoft.conf").absolutePath
+        )
     }
 
     /**

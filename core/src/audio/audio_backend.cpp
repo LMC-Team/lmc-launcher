@@ -60,11 +60,14 @@ bool initAudioBackend() {
     fprintf(f,
             "# LMC Launcher 自动生成（openal-soft 1.24.x）\n"
             "[general]\n"
-            "drivers = aaudio      # 使用 AAudio 原生后端（1.23+ 内置）\n"
-            "resampler = spline    # 低 CPU 占用的重采样档位\n"
+            // 后端必须是 oboe/opensl——Pojav 生态的 libopenal 只编译了
+            // oboe/opensl/null/wave，没有原生 aaudio 后端（真机 2026-10-01：
+            // 写 aaudio 会导致 "Failed to open OpenAL device"，MC 静音）。
+            "drivers = oboe,opensl   # oboe 优先（AAudio/OpenSL 封装），opensl 兜底\n"
+            "resampler = spline      # 低 CPU 占用的重采样档位\n"
             "stereo-mode = speakers\n"
-            "[aaudio]\n"
-            "mmap = %s             # MMAP 低延迟通道（探测结果）\n"
+            "[oboe]\n"
+            "mmap = %s             # MMAP 低延迟通道（AAudio MMAP 探测结果）\n"
             "buffer-size = %d      # 以 burst 为单位对齐，避免周期漂移\n",
             rt.aaudioMmapAvailable ? "true" : "false",
             rt.aaudioBurstFrames > 0 ? rt.aaudioBurstFrames : 256);
