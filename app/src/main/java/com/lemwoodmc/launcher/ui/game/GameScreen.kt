@@ -86,32 +86,31 @@ fun GameScreen(onExit: () -> Unit) {
                         override fun surfaceRedrawNeeded(holder: SurfaceHolder) {}
                     })
                     setZOrderMediaOverlay(false)
-                    // ---- 触摸桥：触摸 → CallbackBridge 事件流 → pojavexec 输入桥 ----
-                    // 单指模拟鼠标：DOWN/MOVE = 移动+左键按下，UP = 左键抬起。
-                    // 坐标 1:1（MC 窗口尺寸 = glfwstub.windowWidth/Height = Surface 物理尺寸）。
-                    setOnTouchListener { _, event ->
-                        when (event.actionMasked) {
-                            android.view.MotionEvent.ACTION_DOWN -> {
-                                vm.sendTouch(event.x, event.y, true)
-                            }
-                            android.view.MotionEvent.ACTION_MOVE -> {
-                                vm.sendTouch(event.x, event.y, null)
-                            }
-                            android.view.MotionEvent.ACTION_UP,
-                            android.view.MotionEvent.ACTION_CANCEL -> {
-                                vm.sendTouch(event.x, event.y, false)
-                            }
-                        }
-                        true
-                    }
+                    // 触摸桥已迁移至 ControlBoxLayout content 内的 TouchBridgeLayout(zl2 架构)
                 }
             },
             modifier = Modifier.fillMaxSize(),
         )
 
-        // ---- 虚拟鼠标光标(zl2 鼠标层核心行为):跟随触摸移动的可见箭头 ----
+        // ---- 虚拟鼠标光标(zl2 鼠标层核心行为):未抓取时跟随触摸显示箭头 ----
+        // grab(游戏内视角模式)时 MC 隐藏系统光标,这里同步隐藏;
+        // phase 在游戏运行期间停留在 JVM_STARTING,不能作为渲染判据
+        var isGrabbing by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                isGrabbing = runCatching {
+                    com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.isGrabbing()
+                }.getOrDefault(false)
+                kotlinx.coroutines.delay(300)
+            }
+        }
         val cursor = vm.cursorPosition.value
-        if (cursor != null && state.phase == GameViewModel.Phase.RENDERING) {
+        if (cursor != null && !isGrabbing && state.phase in setOf(
+                GameViewModel.Phase.JVM_STARTING,
+                GameViewModel.Phase.RENDERING,
+                GameViewModel.Phase.RUNNING,
+            )
+        ) {
             val cx = cursor.x
             val cy = cursor.y
             androidx.compose.foundation.Canvas(
@@ -275,7 +274,10 @@ fun GameScreen(onExit: () -> Unit) {
                 checkOccupiedPointers = { false },
                 opacity = controlOpacity,
                 isDark = true,
-            ) {}
+            ) {
+                // zl2 架构:触摸桥位于控件层 content 内,未命中控件的触摸转发游戏鼠标
+                TouchBridgeLayout { x, y, pressed -> vm.sendTouch(x, y, pressed) }
+            }
         }
     }
 }

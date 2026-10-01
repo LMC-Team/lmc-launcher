@@ -814,3 +814,15 @@ LMC 已是一只五脏俱全的 Minecraft 启动器。
 - 游戏内 zl2 控件点击事件链实测(LmcControl 日志)
 - 鼠标层完整行为(grab 感知:grab 时隐藏光标)
 - Esc 点击失效根查(日志通道已备)
+
+## 2026-10-02 凌晨:#58 点不了/没鼠标修复
+
+- **点不了根因(架构级)**:SurfaceView 的独立 onTouchListener 与 zl2 控件层
+  互斥——ControlBoxLayout 覆盖期间触摸全被它吃掉。照抄 zl2 架构:触摸桥迁入
+  ControlBoxLayout content 内(TouchBridgeLayout),控件命中→控件事件,
+  未命中→游戏鼠标事件流,由 zl2 PointerEventBus 统一裁决
+- **没鼠标根因**:Phase 卡在 JVM_STARTING 永不 RENDERING,光标显示条件恒假;
+  光标显示改为"JVM 启动后 + 未 grab";grab 状态经 CallbackBridge.isGrabbing
+  轮询(Helper 转发),grab 时隐藏光标(对齐 zl2)
+- **真机验证**:Esc 按钮 → 暂停菜单弹出 ✓;Back to Game ✓;光标可见 ✓;
+  左键事件流(LmcControl 日志)✓;挖掘/hotbar ✓

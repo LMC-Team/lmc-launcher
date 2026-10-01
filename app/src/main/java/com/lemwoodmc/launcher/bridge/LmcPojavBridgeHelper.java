@@ -81,6 +81,11 @@ public final class LmcPojavBridgeHelper {
                 glfwKey, 0, org.lwjgl.glfw.CallbackBridge.getCurrentMods(), pressed);
     }
 
+    /** 鼠标抓取状态(grab 时游戏隐藏光标,虚拟光标同步隐藏) */
+    public static boolean isGrabbing() {
+        return org.lwjgl.glfw.CallbackBridge.isGrabbing();
+    }
+
     /** GLFW 键码直传（控制层按钮的 keyCode 即 GLFW 码：87=W、65=A、68=D、83=S、32=空格…） */
     public static void sendGlfwKeyEvent(int glfwKeyCode, boolean pressed) {
         org.lwjgl.glfw.CallbackBridge.sendKeyPress(

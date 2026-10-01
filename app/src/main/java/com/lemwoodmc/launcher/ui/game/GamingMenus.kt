@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -278,4 +279,39 @@ fun MenuSliderRow(label: String, value: Float, range: ClosedFloatingPointRange<F
             ),
         )
     }
+}
+
+/**
+ * 触摸桥(放 ControlBoxLayout 的 content 内,zl2 MouseControlLayout 的架构位):
+ * 控件层 Initial pass 未命中控件的触摸落到这里 → 转发游戏鼠标事件流。
+ * 命中控件的触摸被控件层 consume,不会到这里。
+ */
+@Composable
+fun BoxScope.TouchBridgeLayout(
+    onTouch: (x: Float, y: Float, pressed: Boolean?) -> Unit,
+) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var last = down.position
+                    onTouch(down.position.x, down.position.y, true)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        if (!change.pressed) {
+                            onTouch(change.position.x, change.position.y, false)
+                            break
+                        }
+                        if (change.position != last) {
+                            onTouch(change.position.x, change.position.y, null)
+                            last = change.position
+                        }
+                        // 不消费:保持对上层(悬浮球等)友好,且不干扰控件层状态机
+                    }
+                }
+            }
+    )
 }
