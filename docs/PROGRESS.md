@@ -666,3 +666,66 @@ pojavexec……需要 zl2 的 jni 构建,NDK 已就位可直接编)。
 - authlib 网络异常(MinecraftClient.readInputStream)为离线模式正常噪音
 - OpenAL 设备打开失败(SoundSystem 被 MC 自行关闭)——alsoft.conf 的
   drivers=null 未生效,待查配置搜索路径
+
+## 2026-10-01 晚:断点 #49 攻破 —— 玩家进入真实游戏世界 🎉🎉
+
+### #49 click 不触发:根因 = CriticalNative ABI 错位
+
+**探针定位**(自编 libpojavexec 加 LMC-INPUT 日志):
+- 点击时 button 事件到达 native,但参数全乱:act=8/负数、mods=寄存器垃圾;
+  而 cursorPos 的 float 参数(x/y)完全正确 → "hover 有效、click 无效"的怪象
+- 根因链:lmc 缺 `CriticalNativeTest` 探测类 → input_bridge 的
+  tryCriticalNative FindClass 失败 → 注册 **noncritical 函数表**(带
+  JNIEnv*/jobject 前缀);但 CallbackBridge 的 native 方法保留
+  `@CriticalNative` 注解(ART 寄存器直传,无 env 前缀)→ **ABI 错位两个寄存器**
+- float 参数走 s0/s1 浮点寄存器,与 int 错位无关 → cursor 依然正确,button 全乱
+- 修复:补拷 CriticalNativeTest.java(zl2 同源)→ 探测通过 → critical 表 → ABI 匹配
+- 验证:探针输出 act=1 mods=0(DOWN)/ act=0 mods=0(UP),完全干净;
+  Singleplayer 点击成功 → Select World → Play Selected World
+
+### #50 世界生成阶段 SIGSEGV:温度回调用了错误的 JavaVM
+
+- 现象:Create New World 后 "Generating keypair" 处进程死亡,
+  SIGSEGV @ libjvm.so,fault addr 0x3b,线程 DefaultDispatch
+- 根因:温度监控线程的回调 `thermalCallbackToJava` 用 `lmc::globalJvm()`,
+  该指针在 HotSpot JVM 创建成功后被 `setGlobalJvm` **覆盖** → 回调拿
+  HotSpot 的 env 调 ART 侧的 jobject/methodID → HotSpot 解引用伪指针 SEGV
+- 修复:native_bridge.cpp 新增 `g_artHostVm`(JNI_OnLoad 缓存 ART 宿主 VM,
+  专供温度回调),不再共用 globalJvm
+- 验证:游戏内温度预警横幅正常显示"预测 81°C,已降低渲染分辨率"
+
+### 里程碑(真机实拍)
+
+```
+主菜单(Logo/按钮/tooltip 全渲染) → Singleplayer → Create New World
+→ 内置服务器启动 → Preparing spawn area → logged in
+→ 游戏内渲染:天空/云/准星/血条/饥饿/hotbar/第一人称手持方块 ✓
+```
+
+### 遗留(下回合)
+
+- 性能:Server thread "Can't keep up" 2-4s/tick —— Turnip 首次世界生成正常现象,
+  后续查 chunk 生成限速/线程优先级
+- 输入:游戏内移动(WASD)/视角 grab 模式待接;assets(音效/panorama)未部署
+- OpenAL 声音设备打开失败待查(alsoft.conf drivers=null 未生效)
+
+### 游戏内操控打通(同日补完)
+
+51. **按键移动**:控制层按钮的 keyCode 本就是 GLFW 码(87=W、65=A、68=D、
+    83=S、32=空格),但 sendKey 丢了 pressed 参数(长按变单击)且经
+    Android→GLFW 二次映射错位。修复:Helper 新增 sendGlfwKeyEvent(GLFW 直传
+    + down/up 区分),MC 以状态机维持移动不依赖 key repeat。
+    真机:长按 W → 玩家走进森林 ✓
+52. **视角转动**:zl2 同源 grab 链(glfwSetInputMode→nativeSetGrabbing→
+    onGrabStateChanged)本就完整,拖动即转视角,无需改码 —— 真机验证 ✓
+
+### 全套输入闭环(真机验证)
+
+```
+菜单点击(Singleplayer/Create New World) ✓
+视角转动(grab + 拖动)                   ✓
+WASD 移动(长按虚拟按键)                ✓
+主菜单 panorama 3D 背景渲染             ✓(MC jar 自带纹理)
+游戏内时间/光照(白天→夕阳)             ✓
+温度预警横幅实时显示                     ✓
+```

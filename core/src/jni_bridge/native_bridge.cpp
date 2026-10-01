@@ -39,6 +39,12 @@ namespace {
 jclass g_bridgeClass = nullptr;
 jmethodID g_thermalCallback = nullptr;
 
+// ART 宿主的 JavaVM：JNI_OnLoad 时缓存，专供 native 后台线程回调 ART 侧 Java。
+// 不可用 lmc::globalJvm() 代替——HotSpot JVM 创建后它会覆盖成 HotSpot 的 VM，
+// 温度回调若用 HotSpot 的 env 调 ART 的 jobject/methodID 会直接 SEGV
+// （真机 2026-10-01：世界生成阶段 DefaultDispatch 线程 SIGSEGV @ libjvm.so）。
+JavaVM* g_artHostVm = nullptr;
+
 // mmap 存档句柄表：DirectByteBuffer 地址 → WorldMmap
 std::mutex g_mmapMutex;
 std::unordered_map<const void*, lmc::WorldMmap> g_mmaps;
@@ -64,9 +70,9 @@ std::vector<std::string> toStringVector(JNIEnv* env, jobjectArray arr) {
     return out;
 }
 
-// 温度预警 → Java 回调（native 监控线程，需临时 Attach JVM）
+// 温度预警 → Java 回调（native 监控线程，需临时 Attach ART 宿主 JVM）
 void thermalCallbackToJava(float predictedC, int horizonSec, lmc::ThermalSeverity severity) {
-    JavaVM* vm = lmc::globalJvm();
+    JavaVM* vm = g_artHostVm;
     if (!vm || !g_thermalCallback) return;
     JNIEnv* env = nullptr;
     const bool needDetach = (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK);
@@ -94,6 +100,7 @@ extern "C" {
 
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     lmc::setGlobalJvm(vm);
+    g_artHostVm = vm; // ART 宿主 VM：温度回调专用（HotSpot 创建后会覆盖 globalJvm）
     JNIEnv* env = nullptr;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
 

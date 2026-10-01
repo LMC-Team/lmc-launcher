@@ -67,6 +67,27 @@ public final class LmcPojavBridgeHelper {
         }
     }
 
+    /**
+     * 按键按下/抬起（虚拟按键长按走此路径）：MC 侧以 down/up 状态机维持移动，
+     * 不依赖 key repeat。androidKeyCode 需在 GLFW 映射表内（否则忽略）。
+     */
+    public static void sendKeyEvent(int androidKeyCode, boolean pressed) {
+        int index = com.movtery.zalithlauncher.game.input.EfficientAndroidLWJGLKeycode
+                .getIndexByKey(androidKeyCode);
+        if (index < 0) return;
+        short glfwKey = com.movtery.zalithlauncher.game.input.EfficientAndroidLWJGLKeycode
+                .getValueByIndex(index);
+        org.lwjgl.glfw.CallbackBridge.sendKeyPress(
+                glfwKey, 0, org.lwjgl.glfw.CallbackBridge.getCurrentMods(), pressed);
+    }
+
+    /** GLFW 键码直传（控制层按钮的 keyCode 即 GLFW 码：87=W、65=A、68=D、83=S、32=空格…） */
+    public static void sendGlfwKeyEvent(int glfwKeyCode, boolean pressed) {
+        org.lwjgl.glfw.CallbackBridge.sendKeyPress(
+                (short) glfwKeyCode, 0,
+                org.lwjgl.glfw.CallbackBridge.getCurrentMods(), pressed);
+    }
+
     /** 指针事件：action 0=down 1=up 2=move */
     public static void sendPointerEvent(int action, float x, float y, int button) {
         switch (action) {

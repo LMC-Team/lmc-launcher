@@ -224,11 +224,12 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------
 
     /**
-     * Android 键码 → GLFW 键码后走事件流（对齐 Zalith GameHandler 输入路径）。
-     * 无映射的键码在中间层忽略（-1 检查），避免 UNKNOWN 干扰游戏绑定。
+     * 虚拟按键 → 事件流。参数为 GLFW 键码（控制层 ControlButton 的约定：
+     * 87=W、83=S、65=A、68=D、32=空格、340=左Shift、69=E、81=Q）。
+     * pressed 区分按下/抬起：方向键长按 = 持续移动（MC 以 down/up 状态机维持）。
      */
-    fun sendKey(androidKeyCode: Int, pressed: Boolean) {
-        LmcPojavBridgeHelper.sendKeyByAndroidCode(androidKeyCode)
+    fun sendKey(glfwKeyCode: Int, pressed: Boolean) {
+        LmcPojavBridgeHelper.sendGlfwKeyEvent(glfwKeyCode, pressed)
     }
 
     /** action: 0=down 1=up 2=move；button: 0=左 1=右 2=中 */

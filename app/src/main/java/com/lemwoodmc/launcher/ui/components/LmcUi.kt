@@ -56,10 +56,10 @@ fun ConfigRow(label: String, value: String, valueColor: androidx.compose.ui.grap
     }
 }
 
-/** 页面大标题（替代 TopAppBar，配合底部导航的无返回键结构） */
+/** 页面大标题（替代 TopAppBar，配合侧边导航的无返回键结构） */
 @Composable
 fun PageTitle(text: String, subtitle: String? = null) {
-    Column(Modifier.padding(start = 20.dp, top = 24.dp, end = 20.dp)) {
+    Column(Modifier.padding(start = 20.dp, top = 16.dp, end = 20.dp)) {
         Text(text, style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onBackground)
         if (subtitle != null) {
@@ -67,6 +67,6 @@ fun PageTitle(text: String, subtitle: String? = null) {
             Text(subtitle, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
     }
 }
