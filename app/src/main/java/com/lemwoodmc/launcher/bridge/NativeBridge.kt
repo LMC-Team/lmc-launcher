@@ -66,6 +66,17 @@ object NativeBridge {
      */
     external fun nativeCreateJvm(javaHome: String, jvmArgs: Array<String>, mainClass: String, mainArgs: Array<String>): Int
 
+    /**
+     * 纯 native 线程（pthread）创建并运行 JVM，立即返回。
+     * HotSpot 与 MC main 都在该线程上；该线程不属于 ART，pojavexec 的
+     * onGraphicOutput 首帧回调（Attach→Call→Detach）对其是合法序列。
+     * 与 [nativeWaitJvmExit] 配对使用。
+     */
+    external fun nativeCreateJvmOnNewThread(javaHome: String, jvmArgs: Array<String>, mainClass: String, mainArgs: Array<String>)
+
+    /** 阻塞等待 [nativeCreateJvmOnNewThread] 启动的 JVM 退出，返回退出码。 */
+    external fun nativeWaitJvmExit(): Int
+
     external fun nativeDestroyJvm(): Boolean
 
     /** GraalVM Native Image 极致模式产物是否已部署（<files>/runtime/graal/lmc-native） */

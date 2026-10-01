@@ -25,3 +25,4 @@ runtime-assets/
 # 构建脚本产物
 scripts/build-*/
 scripts/out/
+.workbuddy/

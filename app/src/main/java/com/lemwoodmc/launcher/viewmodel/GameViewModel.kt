@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.lemwoodmc.launcher.bridge.GameLaunchConfig
 import com.lemwoodmc.launcher.bridge.GcType
+import com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper
 import com.lemwoodmc.launcher.bridge.NativeBridge
 import com.lemwoodmc.launcher.bridge.RenderMode
 import com.lemwoodmc.launcher.data.SettingsRepository
@@ -23,13 +24,19 @@ import kotlinx.coroutines.withContext
 /**
  * 游戏运行期 ViewModel：Compose 与 native 后端的核心状态桥。
  *
- * 职责：
- *  - 组装 [GameLaunchConfig]（来自设置 DataStore）并触发 native 侧启动流程；
- *  - 游戏运行期间，控制层事件（按键 / 指针）经 [sendKey]/[sendPointer] 直达 native 输入中枢；
- *  - 订阅 native 温度预警回调，联动降渲染分辨率（性能保护）。
+ * 启动序列全面对齐 Zalith 2（VMActivity → GameHandler → Launcher 三段式）：
+ *  1. Surface 就绪（主线程）：
+ *     ZLBridge.setupBridgeWindow(surface) —— ANativeWindow 注入 pojavexec
+ *     CallbackBridge.sendUpdateWindowSize —— 窗口尺寸同步进事件流
+ *  2. 后台协程（Launcher.launchJvm 等价序列）：
+ *     ZLBridge.setLdLibraryPath → setenv(POJAV_*) → dlopen JRE 链 →
+ *     dlopen libopenal → 组 JVM 参数 → setupExitMethod + initializeGameExitHook +
+ *     chdir → VMLauncher.launchJVM
  *
- * 零开销约定：游戏运行期间本 ViewModel 不持有任何 UI 重绘逻辑，
- * 悬浮控制层可通过 [controlVisible] 整体移出组合，Compose 渲染树为空。
+ * 组件契约：dex 桥（CallbackBridge/ZLBridge/ZLNativeInvoker/LoggerBridge）+
+ * libpojavexec(_awt)/exithook（APK jniLibs）+ LWJGL jar（HotSpot classpath，
+ * 3.3.6-snapshot）+ natives/ 全套（gl4es/Mesa/LWJGL natives，Zalith 2 同源）。
+ * 全部组件同源自 ZalithLauncher 2 仓库，不再有跨 APK 配对问题。
  */
 class GameViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -59,11 +66,13 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     /** 保证 JVM 只启动一次 */
     private val jvmStarted = AtomicBoolean(false)
 
-    /** ART 侧已成功预加载的 natives（避免重复 dlopen 报错干扰判断） */
-    private val loadedNatives = mutableSetOf<String>()
-
     /** 温度回调取消句柄 */
     private var thermalHandle: (() -> Unit)? = null
+
+    init {
+        // dex 桥上下文注入（剪贴板等服务获取）
+        LmcPojavBridgeHelper.injectAppContext(app)
+    }
 
     // ------------------------------------------------------------------
     // 启动流程
@@ -71,13 +80,12 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * SurfaceView 路径（Compose AndroidView 内嵌）：surface 就绪后调用。
-     * 完整启动链条：
-     *   1. nativeApplyRendererEnv —— 布置 Zink/Turnip/gl4es 环境变量（必须在 JVM 创建前）
-     *   2. nativeInitAudio        —— AAudio MMAP 探测 + OpenAL-Soft 配置生成
-     *   3. nativeSetOomAdj        —— 请求 lowmemorykiller 保护
-     *   4. nativeBindGameThreadToBigCores —— 游戏主线程绑大核
-     *   5. nativeStartThermalMonitor —— 温度监控与降频预测
-     *   6. nativeCreateJvm        —— dlopen libjvm.so + JNI_CreateJavaVM + 调用 main（阻塞至退出）
+     *
+     * lmc 特有优化（在 Zalith 序列之外叠加）：
+     *   nativeInitAudio —— AAudio MMAP 探测 + OpenAL-Soft 配置生成
+     *   nativeSetOomAdj —— lowmemorykiller 保护
+     *   nativeBindGameThreadToBigCores —— 游戏主线程绑大核
+     *   nativeStartThermalMonitor —— 温度监控与降频预测
      */
     fun launchOnSurface(surface: Surface, width: Int, height: Int) = viewModelScope.launch(Dispatchers.Default) {
         if (!jvmStarted.compareAndSet(false, true)) return@launch
@@ -89,64 +97,84 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             // log4j 的 RollingRandomAccessFile 需要 gameDir/logs/ 已存在（不会自建父目录）
             File(mcHome, "logs").mkdirs()
 
+            // ---- lmc 性能层（Zalith 序列之外的叠加优化）----
             NativeBridge.nativeApplyRendererEnv(cfg.renderMode.id, filesDir.absolutePath)
             NativeBridge.nativeInitAudio()
-            NativeBridge.nativeSetOomAdj(-900) // 尽量低的 oom_score_adj，失败会被忽略
+            NativeBridge.nativeSetOomAdj(-900)
             NativeBridge.nativeStartThermalMonitor(cfg.thermalThresholdC, cfg.thermalHorizonSec)
             registerThermal()
-
             if (cfg.pinMainThread) {
                 NativeBridge.nativeBindGameThreadToBigCores()
             }
-            NativeBridge.nativeAttachJavaSurface(surface, width, height)
 
-            // ---- ART 侧预加载 natives（Pojav 生态关键契约）----
-            // libpojavexec 等的 JNI_OnLoad 会 RegisterNatives 到 org.lwjgl.glfw.CallbackBridge，
-            // 其方法集与 HotSpot 类路径上的声明存在差异；若留到 HotSpot 首次
-            // loadLibrary 时执行，NoSuchMethodError 无法被 GLFW <clinit> 的
-            // catch(UnsatisfiedLinkError) 捕获而逃逸。必须在 ART 环境（本进程
-            // 的默认运行时）先完成加载与注册，HotSpot 随后复用已加载的 DSO。
-            val nativesDir = File(filesDir, "versions/${cfg.versionId}/natives")
-            // natives 预加载走 JNI（nativePreloadGameNatives）：与 libjvm 同
-            // linker namespace，HotSpot 侧 LWJGL 的 dlopen 才能按 SONAME 复用
-            // （ART System.load 的库对 HotSpot namespace 不可见——真机踩坑）。
-            // 只处理 pojavexec 链；LWJGL/OpenAL natives 由 HotSpot 侧按
-            // org.lwjgl.librarypath 自行加载（版本校验在 java 层）。
-            NativeBridge.nativePreloadGameNatives(nativesDir.absolutePath)
-
-            // 把游戏 Surface 注入 libpojavexec（FCL 版 GLFW 窗口后端）：
-            // CallbackBridge.setupBridgeWindow(Object) → native 侧
-            // ANativeWindow_fromSurface 保存。不注入则 glfwCreateWindow 后
-            // ANativeWindow_acquire(NULL) SIGSEGV（真机踩坑）。
-            // 必须主线程 + 在 HotSpot 启动前（ART 环境 JIT 交互）。
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                // Zalith/FCL 启动配方：环境变量（env_init 读取 POJAV_* 系列）
-                setupZalithEnvironment(nativesDir, width, height)
-                // FCL 窗口启动序列：System.load 注册 libfcl/pojavexec_awt/pojavexec
-                // → FCLBridge.execute → redirectStdio → CallbackBridge.setupBridgeWindow
-                //   （ANativeWindow 注入 pojavexec，GLFW 后端 acquire 用）
-                runCatching {
-                    com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.fclWindowSequence(
-                        nativesDir.absolutePath, surface,
-                        File(filesDir, "minecraft/logs/fcl_bridge.log").absolutePath)
-                    Log.i("LMC", "FCL 窗口注入完成")
-                }.onFailure { Log.w("LMC", "FCL 窗口注入失败: ${it.message}") }
+            // ---- 窗口注入（主线程，HotSpot 启动前）----
+            // 对齐 Zalith VMActivity.surfaceCreated → GameHandler.execute 开头：
+            // setupBridgeWindow 先于一切 JVM/游戏线程动作。
+            // ZLBridge 首次访问触发其静态块：System.loadLibrary(exithook→pojavexec→awt)，
+            // 各 JNI_OnLoad 在 ART 侧完成 RegisterNatives（dex 契约生效）。
+            withContext(Dispatchers.Main) {
+                LmcPojavBridgeHelper.setupBridgeWindow(surface, width, height)
+                Log.i("LMC", "Zalith 桥窗口注入完成（${width}x${height}）")
             }
 
-            // 极致性能模式：跳过 JVM，直接运行 GraalVM Native Image 产物（预留路径）
-            if (cfg.graalNativeImage && NativeBridge.nativeNativeImageAvailable()) {
-                _state.value = _state.value.copy(phase = Phase.JVM_STARTING)
-                val code = NativeBridge.nativeLaunchNativeImage(cfg.gameArgs.toTypedArray())
-                _state.value = _state.value.copy(
-                    phase = if (code == 0) Phase.EXITED else Phase.CRASHED,
-                    exitCode = code,
-                )
-                return@launch
-            }
+            // ---- 游戏首帧监听 ----
+            // 暂不注册 GraphicOutputListener：onGraphicOutput 回调在 HotSpot 渲染线程
+            // 经 JNI 调入 dex，若回调路径抛异常，pojavexec calculateFPS 的
+            // DetachCurrentThread 会因 pending exception 被 CheckJNI abort
+            // （真机 2026-10-01：pojavSwapBuffers 首帧即崩）。RUNNING 状态改由
+            // 日志轮询驱动（GameScreen 侧）。
+            // LmcPojavBridgeHelper.setGraphicOutputListener { _state.value = ... }
 
             _state.value = _state.value.copy(phase = Phase.JVM_STARTING)
-            val args = buildJvmArgs(cfg, filesDir, width, height)
-            // MC 主类需要最小启动参数（gameDir/version/token/username）
+
+            // ---- JVM 日志重定向（对齐 Zalith VMActivity：pojavexec logger
+            //      接住 HotSpot 的 stdout/stderr → 文件 + LoggerBridge.append）----
+            val gameLogFile = File(mcHome, "logs/latest_game.log")
+            gameLogFile.parentFile?.mkdirs()
+            if (!gameLogFile.exists()) gameLogFile.createNewFile()
+            runCatching {
+                com.movtery.zalithlauncher.bridge.LoggerBridge.start(gameLogFile.absolutePath)
+            }.onFailure { Log.w("LMC", "LoggerBridge.start 失败: ${it.message}") }
+
+            // ---- Zalith Launcher.launchJvm 等价序列（后台线程）----
+            val nativesDir = File(filesDir, "versions/${cfg.versionId}/natives")
+            val jreHome = File(filesDir, "runtime/jre21").absolutePath
+            val ctx = getApplication<Application>()
+
+            // ---- 渲染器插件扫描（MobileGlues 等，FCL/Zalith 协议）----
+            // 插件优先：提供 POJAV_RENDERER/env/GL 库名；无插件时回落内置
+            // Freedreno/Turnip 配方。插件 so 目录必须进库搜索路径（egl_loader
+            // 按名字 dlopen POJAVEXEC_EGL）。
+            val rendererPlugin = runCatching {
+                com.lemwoodmc.launcher.game.RendererPluginLoader.pick(ctx)
+            }.getOrNull()
+            if (rendererPlugin != null) {
+                Log.i("LMC", "渲染器插件: ${rendererPlugin.packageName} id=${rendererPlugin.rendererId} dir=${rendererPlugin.nativeLibraryDir}")
+            } else {
+                Log.i("LMC", "未发现渲染器插件，使用内置 Freedreno/Turnip")
+            }
+
+            // 1) HotSpot 侧库搜索路径（native 侧记录，供 dlopen/解析）
+            val runtimeLibPath = buildRuntimeLibraryPath(nativesDir, jreHome, rendererPlugin)
+            LmcPojavBridgeHelper.zalithSetLdLibraryPath(runtimeLibPath)
+
+            // 2) 环境变量（对齐 Zalith setJavaEnv + 渲染配方）
+            setupEnvironment(nativesDir, jreHome, width, height, rendererPlugin)
+
+            // 3) dlopen JRE 库链 + 引擎库（pojavexec 的 dlopen，namespace 正确）
+            dlopenJavaRuntime(jreHome)
+            dlopenEngine(nativesDir)
+            rendererPlugin?.let { plugin ->
+                plugin.dlopen.forEach { LmcPojavBridgeHelper.zalithDlopen("${plugin.nativeLibraryDir}/$it") }
+            }
+
+            // 4) MC options.txt 预写（对齐 Zalith MCOptions.setup）
+            writeMcOptions(mcHome, width, height, cfg)
+
+            // 5) JVM 参数
+            val args = buildJvmArgs(cfg, filesDir, nativesDir, width, height, rendererPlugin)
+
+            // 6) MC 主类与启动参数
             val baseArgs = if (cfg.gameArgs.isEmpty()) {
                 listOf(
                     "--gameDir", mcHome.absolutePath,
@@ -155,20 +183,32 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
                     "--username", "Player",
                 )
             } else cfg.gameArgs
-            // Mio 包装器（FCL 生态）存在时：主类切为 mio.Wrapper
-            val mioJar = File(filesDir, "versions/${cfg.versionId}/libs/mio/MioLaunchWrapper.jar")
-            val (finalMainClass, finalArgs) = if (mioJar.isFile) {
-                "mio.Wrapper" to (listOf(cfg.mainClass) + baseArgs)
-            } else {
-                cfg.mainClass to baseArgs
-            }
-            // 启动路径：VMLauncher.launchJVM（pojavexec 的 JVM 封装入口）
-            // args = java 可执行占位 + JVM 参数 + 主类 + 游戏参数
-            // （pojavexec 内部解析 JVM 参数、dlopen libjvm、CreateJavaVM、调 main）
-            val launcherArgs = (listOf(
-                File(filesDir, "runtime/jre21/bin/java").absolutePath
-            ) + args + listOf(finalMainClass) + finalArgs).toTypedArray()
-            val code = com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.launchJVM(launcherArgs)
+            val versionJson = File(filesDir, "versions/${cfg.versionId}/version.json")
+            val mainClass = if (versionJson.isFile) {
+                runCatching {
+                    org.json.JSONObject(versionJson.readText()).optString("mainClass", cfg.mainClass)
+                }.getOrDefault(cfg.mainClass)
+            } else cfg.mainClass
+
+            // 7) 退出钩子 + CWD（Zalith launchJavaVM 的三连）
+            LmcPojavBridgeHelper.zalithSetupExitMethod(ctx)
+            LmcPojavBridgeHelper.zalithInitializeGameExitHook()
+            LmcPojavBridgeHelper.zalithChdir(mcHome.absolutePath)
+
+            // 8) 启动（阻塞至 JVM 退出）
+            // 路径说明：JVM 必须跑在纯 native 线程（pthread）上——pojavexec 的
+            // onGraphicOutput 首帧回调（SwapBuffers → Attach→Call→Detach）对
+            // "带活跃 JNI 栈的 ART 协程线程" 是非法 detach（ART abort：
+            // "detach while still running code"，debug/release 均崩，真机 2026-10-01）。
+            // JLI_Launch（VMLauncher）路径虽也新建线程，但其 Boardwalk 时代的
+            // sigaction 重置与本机 Termux JRE 组合静默失败，故由 lmc_core
+            // 自管线程 + JNI_CreateJavaVM（该路径 9-28 真机验证过）。
+            Log.i("LMC", "nativeCreateJvmOnNewThread 即将启动, jvmArgs=${args.size} 项, mainClass=$mainClass")
+            NativeBridge.nativeCreateJvmOnNewThread(
+                jreHome, args.toTypedArray(), mainClass, baseArgs.toTypedArray()
+            )
+            val code = NativeBridge.nativeWaitJvmExit()
+            Log.i("LMC", "JVM 退出 code=$code")
             NativeBridge.nativeStopThermalMonitor()
             _state.value = _state.value.copy(
                 phase = if (code == 0) Phase.EXITED else Phase.CRASHED,
@@ -180,16 +220,35 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ------------------------------------------------------------------
-    // 输入注入（悬浮控制层 → native 输入中枢）
+    // 输入注入（悬浮控制层 → CallbackBridge 事件流 → pojavexec 输入桥）
     // ------------------------------------------------------------------
 
-    fun sendKey(keyCode: Int, pressed: Boolean) {
-        NativeBridge.nativeInjectKey(keyCode, pressed)
+    /**
+     * Android 键码 → GLFW 键码后走事件流（对齐 Zalith GameHandler 输入路径）。
+     * 无映射的键码在中间层忽略（-1 检查），避免 UNKNOWN 干扰游戏绑定。
+     */
+    fun sendKey(androidKeyCode: Int, pressed: Boolean) {
+        LmcPojavBridgeHelper.sendKeyByAndroidCode(androidKeyCode)
     }
 
     /** action: 0=down 1=up 2=move；button: 0=左 1=右 2=中 */
     fun sendPointer(action: Int, x: Float, y: Float, button: Int = 0) {
-        NativeBridge.nativeInjectPointer(action, x, y, button)
+        LmcPojavBridgeHelper.sendPointerEvent(action, x, y, button)
+    }
+
+    fun sendScroll(xOffset: Float, yOffset: Float) {
+        LmcPojavBridgeHelper.sendScrollEvent(xOffset, yOffset)
+    }
+
+    /**
+     * SurfaceView 触摸 → 鼠标（单指=左键）：
+     * pressed=true 按下 / false 抬起 / null 仅移动。
+     */
+    fun sendTouch(x: Float, y: Float, pressed: Boolean?) {
+        LmcPojavBridgeHelper.sendCursorPos(x, y)
+        if (pressed != null) {
+            LmcPojavBridgeHelper.sendMouseButtonEvent(0, pressed)
+        }
     }
 
     fun toggleControlLayer() { _controlVisible.value = !_controlVisible.value }
@@ -203,67 +262,278 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         if (jvmStarted.get()) NativeBridge.nativeDetachSurface()
     }
 
+    /** JVM 是否已启动（Surface 尺寸变化时区分首启与重注入） */
+    val isJvmStarted: Boolean get() = jvmStarted.get()
+
+    /**
+     * Surface 尺寸变化（旋转/重布局）：重新注入桥窗口并同步尺寸事件流。
+     * MC 侧 GLFW 收到 EVENT_TYPE_WINDOW_SIZE 后触发 internalWindowSizeChanged，
+     * 游戏内窗口随之调整。必须在主线程操作 Surface。
+     */
+    fun onSurfaceSizeChanged(surface: Surface, width: Int, height: Int) {
+        if (!jvmStarted.get()) return
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            runCatching {
+                LmcPojavBridgeHelper.setupBridgeWindow(surface, width, height)
+                Log.i("LMC", "Surface 尺寸变化重注入: ${width}x$height")
+            }.onFailure { Log.w("LMC", "重注入失败: ${it.message}") }
+        }
+    }
+
     // ------------------------------------------------------------------
-    // 内部
+    // Zalith 启动序列的各环节
+    // ------------------------------------------------------------------
+
+    /** HotSpot/引擎 so 的库搜索路径（对齐 Zalith getRuntimeLibraryPath 简化版；
+     *  渲染器插件的 so 目录必须前置——egl_loader 按名字 dlopen 插件的 EGL 库） */
+    private fun buildRuntimeLibraryPath(
+        nativesDir: File,
+        jreHome: String,
+        plugin: com.lemwoodmc.launcher.game.RendererPluginLoader.Plugin?,
+    ): String = listOfNotNull(
+        plugin?.nativeLibraryDir,
+        File(jreHome, "lib").absolutePath,
+        File(jreHome, "lib/server").absolutePath,
+        nativesDir.absolutePath,
+        getApplication<Application>().applicationInfo.nativeLibraryDir,
+        "/system/lib64",
+        "/vendor/lib64",
+    ).joinToString(":")
+
+    /**
+     * 环境变量（对齐 Zalith setJavaEnv + 渲染配方）。
+     * libpojavexec 的 env_init 读取 POJAV_* 系列决定渲染后端与窗口行为。
+     */
+    private fun setupEnvironment(
+        nativesDir: File,
+        jreHome: String,
+        width: Int,
+        height: Int,
+        plugin: com.lemwoodmc.launcher.game.RendererPluginLoader.Plugin?,
+    ) {
+        val filesDir = getApplication<Application>().filesDir
+        val e = LmcPojavBridgeHelper.EnvPutter()
+        // 必须指向设备 natives 目录（files/versions/<id>/natives）：osm_bridge 用
+        // POJAV_NATIVEDIR + LIB_MESA_NAME 拼 libOSMesa 路径；Zalith 的同款配置
+        // 也指向其 files 下的 natives（不是 APK nativeLibraryDir，真机踩坑）
+        e.put("POJAV_NATIVEDIR", nativesDir.absolutePath)
+        e.put("DRIVER_PATH", nativesDir.absolutePath)
+        e.put("JAVA_HOME", jreHome)
+        e.put("HOME", File(filesDir, "minecraft").absolutePath)
+        e.put("TMPDIR", File(filesDir, "../cache").canonicalPath)
+        e.put("LD_LIBRARY_PATH", buildRuntimeLibraryPath(nativesDir, jreHome, plugin))
+        e.put("PATH", File(jreHome, "bin").absolutePath + ":" + (System.getenv("PATH") ?: ""))
+        e.put("AWTSTUB_WIDTH", width.toString())
+        e.put("AWTSTUB_HEIGHT", height.toString())
+
+        if (plugin != null) {
+            // ---- 渲染器插件配方（MobileGlues 等，FCL/Zalith 协议）----
+            e.put("POJAV_RENDERER", plugin.rendererId)
+            for ((k, v) in plugin.env) {
+                // EGL/GL 库名相对插件的 nativeLibraryDir，需展开为绝对路径
+                //（egl_loader/osm_bridge 的 dlopen 按库搜索路径查找，插件目录
+                // 已在 LD_LIBRARY_PATH 前列，但绝对路径最稳）
+                e.put(k, "${plugin.nativeLibraryDir}/$v")
+            }
+            // 插件配方自带的 LIBGL_* 系列已随 envMap 注入；gl4es 兼容参数兜底
+            e.put("LIBGL_MIPMAP", "3")
+            e.put("LIBGL_NOERROR", "1")
+        } else {
+            // ---- 内置 Freedreno/Turnip 配方（无插件时的回落）----
+            e.put("POJAV_RENDERER", "gallium_freedreno")
+            e.put("LIB_MESA_NAME", "libOSMesa_8.so")
+            e.put("LIBGL_ES", "2")
+            e.put("LIBGL_MIPMAP", "3")
+            e.put("LIBGL_NOERROR", "1")
+            e.put("LIBGL_NOINTOVLHACK", "1")
+            e.put("LIBGL_NORMALIZE", "1")
+        }
+        // 大核亲和（pojavexec 内建支持，与 lmc 的 sched 层互补）
+        e.put("POJAV_BIG_CORE_AFFINITY", "1")
+    }
+
+    /**
+     * dlopen JRE 库链（对齐 Zalith dlopenJavaRuntime）：
+     * libjli → libjvm → freetype/verify/java/net/nio/awt/awt_headless/fontmanager，
+     * 最后递归 dlopen runtime 下全部 so（JDK 内部依赖自洽）。
+     * 必须走 ZLBridge.dlopen（pojavexec 的 native dlopen），namespace 才正确。
+     */
+    private fun dlopenJavaRuntime(jreHome: String) {
+        val javaLibDir = File(jreHome, "lib").absolutePath
+        val jliDir = if (File(javaLibDir, "jli/libjli.so").isFile) "$javaLibDir/jli" else javaLibDir
+        val jvmDir = if (File(javaLibDir, "server/libjvm.so").isFile) "$javaLibDir/server" else "$javaLibDir/client"
+
+        dlopenLogged("jli", "$jliDir/libjli.so")
+        dlopenLogged("jvm", "$jvmDir/libjvm.so")
+        dlopenLogged("freetype", "$javaLibDir/libfreetype.so")
+        dlopenLogged("verify", "$javaLibDir/libverify.so")
+        dlopenLogged("java", "$javaLibDir/libjava.so")
+        dlopenLogged("net", "$javaLibDir/libnet.so")
+        dlopenLogged("nio", "$javaLibDir/libnio.so")
+        dlopenLogged("awt", "$javaLibDir/libawt.so")
+        dlopenLogged("awt_headless", "$javaLibDir/libawt_headless.so")
+        dlopenLogged("fontmanager", "$javaLibDir/libfontmanager.so")
+
+        // 递归补齐 runtime 下所有 so（对齐 Zalith locateLibs）。
+        // 多轮收敛：依赖序不保证（如 libinstrument 依赖 libiconv），第一轮
+        // 因依赖未加载而失败的，下一轮依赖就位后重试即可命中。
+        var extra = 0
+        val all = File(jreHome).walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".so") }
+            .toList()
+        var pending = all
+        repeat(3) {
+            val next = mutableListOf<File>()
+            for (f in pending) {
+                if (!LmcPojavBridgeHelper.zalithDlopen(f.absolutePath)) next.add(f)
+            }
+            extra += pending.size - next.size
+            if (next.isEmpty()) return@repeat
+            pending = next
+        }
+        Log.i("LMC", "JRE dlopen 完成: 固定链 + 递归成功 $extra/${all.size}，仍失败 ${pending.size}: ${pending.take(3).joinToString { it.name }}")
+    }
+
+    /** 引擎库：OpenAL（对齐 Zalith dlopenEngine） */
+    private fun dlopenEngine(nativesDir: File) {
+        val openal = File(nativesDir, "libopenal.so")
+        if (openal.isFile) {
+            LmcPojavBridgeHelper.zalithDlopen(openal.absolutePath)
+        }
+    }
+
+    /** dlopen 诊断版（逐项打日志，namespace/依赖问题一眼可见） */
+    private fun dlopenLogged(tag: String, path: String) {
+        val ok = LmcPojavBridgeHelper.zalithDlopen(path)
+        if (!ok) Log.w("LMC", "dlopen 失败 [$tag] $path")
+    }
+
+    /**
+     * MC options.txt 预写（对齐 Zalith MCOptions.setup / GameHandler.execute）。
+     * overrideWidth/Height 决定 MC 内部窗口尺寸，必须与 Surface 一致。
+     */
+    private fun writeMcOptions(mcHome: File, width: Int, height: Int, cfg: GameLaunchConfig) {
+        val optionsFile = File(mcHome, "options.txt")
+        val existing = if (optionsFile.isFile) {
+            optionsFile.readLines().associate {
+                val idx = it.indexOf(':')
+                if (idx > 0) it.substring(0, idx) to it.substring(idx + 1) else it to null
+            }.toMutableMap()
+        } else mutableMapOf()
+
+        fun set(key: String, value: String) { existing[key] = value }
+        set("fullscreen", "true")
+        set("touchscreen", "false")
+        set("options.narrator", "0")
+        set("narrator", "0")
+        set("overrideWidth", width.toString())
+        set("overrideHeight", height.toString())
+        // 渲染后端偏好（version.json 的 GraphicsApi 可覆盖，骨架阶段默认 GL）
+        if (!existing.containsKey("preferredGraphicsBackend")) {
+            set("preferredGraphicsBackend", "GL")
+        }
+        // 旧版本按键冲突规避（对齐 Zalith isLowerVer("1.13") 分支）
+        val mcVer = runCatching {
+            val vj = File(
+                getApplication<Application>().filesDir,
+                "versions/${cfg.versionId}/version.json"
+            )
+            org.json.JSONObject(vj.readText()).optString("id", "")
+        }.getOrDefault("")
+        val minor = mcVer.split('.').getOrNull(1)?.toIntOrNull()
+        if (minor != null && minor < 13) {
+            set("key_key.fullscreen", "0")
+            set("key_key.streamStartStop", "0")
+            set("key_key.streamPauseUnpause", "0")
+        }
+
+        optionsFile.bufferedWriter().use { w ->
+            for ((k, v) in existing) w.write("$k:${v ?: ""}\n")
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 配置与 JVM 参数
     // ------------------------------------------------------------------
 
     private suspend fun buildConfig(): GameLaunchConfig {
         val s = repo.settings.first()
-        // version.json（版本下载器写入）记录真实 mainClass，优先于设置值
-        val versionJson = File(
-            getApplication<Application>().filesDir,
-            "versions/${s.selectedVersionId}/version.json"
-        )
-        val mainClass = if (versionJson.isFile) {
-            runCatching {
-                org.json.JSONObject(versionJson.readText()).optString("mainClass", s.mainClass)
-            }.getOrDefault(s.mainClass)
-        } else s.mainClass
-
+        val gc = GcType.fromId(s.gcId)
+        // Termux 官方 JRE 的 ZGC 会被 seccomp 杀死（NUMA 探测 get_mempolicy → SIGSYS，
+        // 旧断点 #8）；换 scripts/build_openjdk.sh 方案 B 的自构建 JRE 后才可放开
+        val safeGc = if (gc == GcType.ZGC) {
+            Log.w("LMC", "ZGC 需自编译 JRE（NUMA 补丁），本次回落 ParallelGC")
+            GcType.PARALLEL
+        } else gc
         return GameLaunchConfig(
             heapSizeMb = s.heapSizeMb,
             renderMode = RenderMode.fromId(s.renderModeId),
-            gcType = GcType.fromId(s.gcId),
+            gcType = safeGc,
             appCds = s.appCds,
             graalNativeImage = s.graalNativeImage,
             pinMainThread = s.pinMainThread,
             thermalThresholdC = s.thermalGuardThresholdC,
             thermalHorizonSec = s.thermalHorizonSec,
             versionId = s.selectedVersionId,
-            mainClass = mainClass,
+            mainClass = s.mainClass,
         )
     }
 
     /**
-     * 生成 JVM 参数（与 C++ 侧 jvm_options.cpp 的默认值策略一致；
-     * 这里在 Kotlin 侧拼装是为了让设置页实时预览命令行）。
-     * width/height：Surface 实际尺寸（Zalith GLFW stub 的窗口属性需要）。
+     * 生成 JVM 参数（对齐 Zalith getJavaArgs + progressFinalUserArgs + getCacioJavaArgs，
+     * 保留 lmc 特性：AppCDS / GC 选择 / 绑核相关）。
      */
-    private fun buildJvmArgs(cfg: GameLaunchConfig, filesDir: File, width: Int, height: Int): List<String> = buildList {
-        // 固定堆：Xms == Xmx，避免堆伸缩带来的抖动
+    private fun buildJvmArgs(
+        cfg: GameLaunchConfig,
+        filesDir: File,
+        nativesDir: File,
+        width: Int,
+        height: Int,
+        rendererPlugin: com.lemwoodmc.launcher.game.RendererPluginLoader.Plugin?,
+    ): List<String> = buildList {
+        // ---- Zalith overridable 系统属性 ----
+        add("-Djava.home=${File(filesDir, "runtime/jre21").absolutePath}")
+        add("-Djava.io.tmpdir=${File(filesDir, "../cache").canonicalPath}")
+        add("-Djna.boot.library.path=${nativesDir.absolutePath}")
+        add("-Duser.home=${File(filesDir, "minecraft").absolutePath}")
+        add("-Dos.name=Linux")
+        add("-Dos.version=Android-${android.os.Build.VERSION.RELEASE}")
+        add("-Dpojav.path.minecraft=${File(filesDir, "minecraft").absolutePath}")
+        add("-Dorg.lwjgl.vulkan.libname=libvulkan.so")
+        // GLFW stub 窗口属性（initEgl=false：EGL 上下文由 egl_bridge 的桥接层管理，
+        // 不由 GLFW stub 自建——Zalith 启动配方，缺失会导致 no current context）
+        add("-Dglfwstub.windowWidth=$width")
+        add("-Dglfwstub.windowHeight=$height")
+        add("-Dglfwstub.initEgl=false")
+        add("-Dlog4j2.formatMsgNoLookups=true")
+        add("-Djava.rmi.server.useCodebaseOnly=true")
+        add("-Dcom.sun.jndi.rmi.object.trustURLCodebase=false")
+        add("-Dcom.sun.jndi.cosnaming.object.trustURLCodebase=false")
+        add("-Dfml.earlyprogresswindow=false")
+        add("-Dfml.ignoreInvalidMinecraftCertificates=true")
+        add("-Dfml.ignorePatchDiscrepancies=true")
+        add("-Dloader.disable_forked_guis=true")
+        add("-Djdk.lang.Process.launchMechanism=FORK")
+        add("-Dsodium.checks.issue2561=false")
+
+        // ---- lmc 特性：GC / 堆 / AppCDS ----
         add("-Xms${cfg.heapSizeMb}M"); add("-Xmx${cfg.heapSizeMb}M")
-        // GC 策略
         cfg.gcType.flag.split(" ").forEach { add(it) }
-        // JIT 编译线程数匹配大核数（若用户未指定，由 C++ 侧按拓扑注入 CICompilerCount）
         cfg.jitThreads?.let {
             add("-XX:CICompilerCount=$it")
-            add("-XX:-CICompilerCountPerCPU") // bool 型开关：关闭需用 - 前缀
+            add("-XX:-CICompilerCountPerCPU")
         }
-        // Termux JRE 的 C2 编译器在部分 OEM 内核上会生成崩溃代码（SIGSEGV in JIT cache），
-        // 先限定 C1 编译；换 Pojav 补丁版 JRE 后可移除
+        // Termux JRE 的 C2 在部分 OEM 内核上生成崩溃代码；换补丁版 JRE 后可移除
         add("-XX:TieredStopAtLevel=1")
-        // AppCDS：首次运行自动生成共享类存档，后续启动直接 mmap。
-        // 与 -javaagent 冲突（CDS dumping 禁止 java agent），cacio agent 存在时跳过
-        val hasJavaAgent = File(filesDir, "versions/${cfg.versionId}/libs/cacio/cacio-agent.jar").isFile
+        add("-XX:ActiveProcessorCount=${java.lang.Runtime.getRuntime().availableProcessors()}")
+        val hasJavaAgent = true // Mio patcher 与 cacio agent 均为 javaagent，与 CDS 互斥
         if (cfg.appCds && !hasJavaAgent) {
             add("-XX:SharedArchiveFile=${File(filesDir, "cache/app.jsa").absolutePath}")
             add("-XX:+AutoCreateSharedArchive")
             add("-Xshare:auto")
         }
-        // ---- 类路径组装：client.jar + versions/<id>/libs/ 下全部 jar（递归）----
-        // Minecraft 完整 classpath 还包含官方 libraries，由版本导入流程展开到 libs/
-        // 注意：JNI_CreateJavaVM 不接受 java 启动器的 -cp 参数，
-        // classpath 必须以 java.class.path 系统属性传入
+
+        // ---- 类路径：client.jar + versions/<id>/libs/ 全部 jar（递归）----
         if (!cfg.gameArgs.contains("-cp") && !cfg.gameArgs.contains("-classpath")) {
             val versionDir = File(filesDir, "versions/${cfg.versionId}")
             val cpFiles = mutableListOf<File>()
@@ -275,39 +545,50 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
                 add("-Djava.class.path=" + cpFiles.joinToString(":") { it.absolutePath })
             }
         }
-        // 运行时路径：natives 目录（LWJGL-android 替换件）加入 java.library.path；
-        // Kotlin 侧设置后，native 侧 jvm_options 的同名补充会自动跳过
-        val versionDir = File(filesDir, "versions/${cfg.versionId}")
-        val nativesDir = File(versionDir, "natives")
+
+        // ---- natives 路径（LWJGL natives 由 HotSpot 按 librarypath 加载）----
         add("-Djava.library.path=" + listOf(
-            getApplication<Application>().applicationInfo.nativeLibraryDir,
             nativesDir.absolutePath,
-            File(filesDir, "minecraft").absolutePath,
-            "/system/lib64",
+            getApplication<Application>().applicationInfo.nativeLibraryDir,
         ).joinToString(":"))
-        // LWJGL 3 优先读自己的路径属性（java.library.path 不一定被其采用）
         add("-Dorg.lwjgl.librarypath=${nativesDir.absolutePath}")
-        // Zalith GLFW stub 的窗口尺寸属性（缺省 1280x720，与 Surface 实际尺寸不符会黑屏）
-        add("-Dglfwstub.windowWidth=${width}")
-        add("-Dglfwstub.windowHeight=${height}")
+        // LWJGL 组件库指名（对齐 Zalith progressFinalUserArgs）
+        add("-Dorg.lwjgl.openal.libname=${File(nativesDir, "libopenal.so").absolutePath}")
+        add("-Dorg.lwjgl.freetype.libname=${File(nativesDir, "libfreetype.so").absolutePath}")
+        add("-Dorg.lwjgl.spvc.libname=spirv-cross-c-shared")
+        add("-Dorg.lwjgl.system.allocator=system")
+        // 渲染库指名：插件（MobileGlues 等）优先用其 glName；无插件回落
+        // Freedreno/Turnip 的 libOSMesa_8.so。缺失时 MC 在 GL.<clinit> 找
+        // libGL.so.1 直接 UnsatisfiedLinkError。
+        val glLibName = rendererPlugin?.let { "${it.nativeLibraryDir}/${it.glName}" }
+            ?: File(nativesDir, "libOSMesa_8.so").absolutePath
+        add("-Dorg.lwjgl.opengl.libname=$glLibName")
         add("-Dorg.lwjgl.util.Debug=true")
         add("-Dorg.lwjgl.util.DebugLoader=true")
-        add("-Dorg.lwjgl.util.debug=true") // 诊断：LWJGL 库加载路径输出
-        add("-Dorg.lwjgl.opengl.libname=libGL.so.1") // Zink 路径由 Mesa 提供 libGL
-        add("-Dos.name=Linux")
-        add("-Dminecraft.jar=${File(versionDir, "client.jar").absolutePath}")
-        // ---- caciocavallo AWT 桥（Zalith/FCL 启动配方，来源 LaunchArgs.kt）----
-        // MC 的窗口是 AWT 桥虚拟窗口，实际渲染走 launcher 注入的 Surface
+        add("-Dminecraft.jar=${File(filesDir, "versions/${cfg.versionId}/client.jar").absolutePath}")
+
+        // ---- Mio patcher：暂不挂 javaagent ----
+        // MioLibPatcher 依赖 pojavexec 的 pojav_environ(dalvikJNIEnvPtr_ANDROID)，
+        // 该指针仅在 VMLauncher.launchJVM 路径赋值；我们走 lmc_core 的
+        // JNI_CreateJavaVM 路径，agent 的 processJavaStart 会失败。
+        // 待确认无 pojav_environ 依赖后再启用（2026-10-01 真机日志：MioPatcher
+        // is running → processing of -javaagent failed）。
+        // val mioPatcher = File(filesDir, "versions/${cfg.versionId}/libs/mio/mio-patcher.jar")
+        // if (mioPatcher.isFile) add("-javaagent:${mioPatcher.absolutePath}")
+
+        // ---- caciocavallo AWT 桥（MC 内 Swing/AWT 组件用，非主渲染路径）----
         add("-Djava.awt.headless=false")
-        add("-Dcacio.managed.screensize=${width}x${height}")
+        add("-Dcacio.managed.screensize=${width}x$height")
         add("-Dcacio.font.fontmanager=sun.awt.X11FontManager")
         add("-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler")
         add("-Dswing.defaultlaf=javax.swing.plaf.nimbus.NimbusLookAndFeel")
         add("-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit")
         add("-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment")
-        // cacio agent + 模块开放（照抄 Zalith LaunchArgs 172-199 行）
-        val cacioAgent = File(versionDir, "libs/cacio/cacio-agent.jar")
-        if (cacioAgent.isFile) add("-javaagent:${cacioAgent.absolutePath}")
+        // ---- cacio agent：暂不挂 javaagent（同 Mio：依赖 pojavexec 的 ART
+        // 环境指针，nativeCreateJvm 路径下 premain 失败 → VM 初始化中止）。
+        // cacio 类仍经 -Xbootclasspath/a 加载，MC 主渲染路径（GLFW 桥）不依赖 AWT。
+        val cacioAgent = File(filesDir, "versions/${cfg.versionId}/libs/cacio/cacio-agent.jar")
+        if (false && cacioAgent.isFile) add("-javaagent:${cacioAgent.absolutePath}")
         listOf(
             "--add-exports=java.desktop/java.awt=ALL-UNNAMED",
             "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED",
@@ -326,22 +607,17 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
             "--add-opens=java.base/java.net=ALL-UNNAMED",
         ).forEach { add(it) }
-        // cacio 全部 jar 上 bootclasspath（JDK9+ 用 -Xbootclasspath/a）
-        val cacioDir = File(versionDir, "libs/cacio")
+        val cacioDir = File(filesDir, "versions/${cfg.versionId}/libs/cacio")
         if (cacioDir.isDirectory) {
             val bootCp = cacioDir.listFiles { f -> f.name.endsWith(".jar") }
                 ?.joinToString(":") { it.absolutePath } ?: ""
             if (bootCp.isNotEmpty()) add("-Xbootclasspath/a:$bootCp")
         }
-        // Mio wrapper 检测（FCL 生态）：主类切为 mio.Wrapper
-        val mioJar = File(versionDir, "libs/mio/MioLaunchWrapper.jar")
-        if (mioJar.isFile) add("-Dmio.wrapper=${mioJar.absolutePath}")
     }
 
     private fun registerThermal() {
         thermalHandle = NativeBridge.addThermalListener { predictedC, _, severity ->
             _state.value = _state.value.copy(thermalPredictedC = predictedC, thermalSeverity = severity)
-            // severity >= 1 时由渲染桥自动降低分辨率缩放（C++ 侧同步置位）
         }
     }
 
@@ -353,30 +629,4 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 供 Compose 调试预览：后台线程取一次设置快照 */
     suspend fun currentSettingsForPreview() = withContext(Dispatchers.Default) { repo.settings.first() }
-
-    /**
-     * Zalith 启动配方环境变量（照抄 Zalith JREUtils.setJavaEnv/setRendererEnv）：
-     * libpojavexec 的 env_init 读取 POJAV_* 系列决定渲染后端与窗口行为。
-     */
-    private fun setupZalithEnvironment(nativesDir: File, width: Int, height: Int) {
-        val filesDir = getApplication<Application>().filesDir
-        val jreHome = File(filesDir, "runtime/jre21").absolutePath
-        val e = com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.EnvPutter()
-        e.put("POJAV_NATIVEDIR", getApplication<Application>().applicationInfo.nativeLibraryDir)
-        e.put("DRIVER_PATH", nativesDir.absolutePath)
-        e.put("JAVA_HOME", jreHome)
-        e.put("HOME", File(filesDir, "minecraft").absolutePath)
-        e.put("TMPDIR", filesDir.absolutePath.let { File(filesDir, "../cache").canonicalPath })
-        e.put("LD_LIBRARY_PATH", "$nativesDir:${File(jreHome, "lib/server").absolutePath}:$jreHome/lib")
-        e.put("AWTSTUB_WIDTH", width.toString())
-        e.put("AWTSTUB_HEIGHT", height.toString())
-        // 渲染后端：gl4es（LIBGL_ES=2 家族，gl4es 已部署 natives/）
-        e.put("POJAV_RENDERER", "opengles") // gl4es 桥（pojavexec 合法值）
-        e.put("LIBGL_ES", "2")
-        e.put("LIBGL_MIPMAP", "3")
-        e.put("LIBGL_NOERROR", "1")
-        e.put("LIBGL_NOINTOVLHACK", "1")
-        e.put("LIBGL_NORMALIZE", "1")
-        e.commit()
-    }
 }

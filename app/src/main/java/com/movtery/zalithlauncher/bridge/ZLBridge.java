@@ -2,34 +2,87 @@ package com.movtery.zalithlauncher.bridge;
 
 import android.content.Context;
 
+import androidx.annotation.Keep;
+
 /**
- * Zalith 生态桥（dex 版 stub）。
+ * Zalith 2 完整版原生桥（dex 契约，签名从 ZalithLauncher 源码对齐）。
  *
  * Zalith 版 libpojavexec.so 的 JNI 导出指向本类：
- *   Java_com_movtery_zalithlauncher_bridge_ZLBridge_{chdir,dlopen,
- *   setLdLibraryPath,setupBridgeWindow,releaseBridgeWindow,setupExitMethod}
- * 方法签名与 Zalith dex 完全一致（dexdump 提取）。
+ *   Java_com_movtery_zalithlauncher_bridge_ZLBridge_*
  *
- * 关键方法 setupBridgeWindow(Object surface)：把游戏 Surface 交给
- * libpojavexec（ANativeWindow_fromSurface 保存为 GLFW 窗口后端）。
+ * 分组：
+ *  - AWT 输入事件：sendInputData 统一事件流（EVENT_TYPE_* 与 CallbackBridge 一致）
+ *  - Launch：setLdLibraryPath / dlopen（pojavexec 的 native dlopen——其 namespace
+ *    被 HotSpot 继承，JRE 链与引擎 so 必须经此加载）
+ *  - Render：setupBridgeWindow / releaseBridgeWindow / moveWindow / renderAWTScreenFrame
+ *  - Input：sendInputData / clipboardReceived（awt 桥回调目标）
+ *  - Utils：chdir
  */
-public class ZLBridge {
+@Keep
+public final class ZLBridge {
+    // AWT 事件类型（与 org.lwjgl.glfw.CallbackBridge 一致）
+    public static final int EVENT_TYPE_CHAR = 1000;
+    public static final int EVENT_TYPE_CURSOR_POS = 1003;
+    public static final int EVENT_TYPE_KEY = 1005;
+    public static final int EVENT_TYPE_MOUSE_BUTTON = 1006;
 
-    /** 进程 CWD 切换（MC 日志相对路径依赖；返回 0=成功） */
-    public static native int chdir(String path);
+    public static void sendKey(char keychar, int keycode) {
+        // TODO: Android -> AWT keycode mapping
+        sendInputData(EVENT_TYPE_KEY, (int) keychar, keycode, 1, 0);
+        sendInputData(EVENT_TYPE_KEY, (int) keychar, keycode, 0, 0);
+    }
 
-    /** 在 HotSpot linker namespace 里 dlopen 一个 so（返回 true=成功） */
-    public static native boolean dlopen(String soPath);
+    public static void sendKey(char keychar, int keycode, int state) {
+        sendInputData(EVENT_TYPE_KEY, (int) keychar, keycode, state, 0);
+    }
 
-    /** 设置 HotSpot 侧的库搜索路径（供 LWJGL natives 解析） */
-    public static native void setLdLibraryPath(String path);
+    public static void sendChar(char keychar) {
+        sendInputData(EVENT_TYPE_CHAR, (int) keychar, 0, 0, 0);
+    }
 
-    /** 把游戏 Surface 注入 libpojavexec（GLFW 窗口后端） */
-    public static native void setupBridgeWindow(Object surface);
+    public static void sendMousePress(int awtButtons, boolean isDown) {
+        sendInputData(EVENT_TYPE_MOUSE_BUTTON, awtButtons, isDown ? 1 : 0, 0, 0);
+    }
 
-    /** 释放桥窗口（surface 销毁时） */
-    public static native void releaseBridgeWindow();
+    public static void sendMousePress(int awtButtons) {
+        sendMousePress(awtButtons, true);
+        sendMousePress(awtButtons, false);
+    }
 
-    /** 注册游戏退出回调（native 侧退出时回调 launcher） */
-    public static native void setupExitMethod(Context context);
+    public static void sendMousePos(int x, int y) {
+        sendInputData(EVENT_TYPE_CURSOR_POS, x, y, 0, 0);
+    }
+
+    // Game
+    @Keep public static native void initializeGameExitHook();
+
+    @Keep public static native void setupExitMethod(Context context);
+
+    // Launch
+    @Keep public static native void setLdLibraryPath(String ldLibraryPath);
+
+    @Keep public static native boolean dlopen(String libPath);
+
+    // Render
+    @Keep public static native void setupBridgeWindow(Object surface);
+
+    @Keep public static native void releaseBridgeWindow();
+
+    @Keep public static native void moveWindow(int xOffset, int yOffset);
+
+    @Keep public static native int[] renderAWTScreenFrame();
+
+    // Input
+    @Keep public static native void sendInputData(int type, int i1, int i2, int i3, int i4);
+
+    @Keep public static native void clipboardReceived(String data, String mimeTypeSub);
+
+    // Utils
+    @Keep public static native int chdir(String path);
+
+    static {
+        NativeLibraryLoader.loadExitHookLib();
+        NativeLibraryLoader.loadPojavLib();
+        NativeLibraryLoader.loadPojavAWTLib();
+    }
 }

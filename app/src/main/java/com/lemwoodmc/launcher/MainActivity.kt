@@ -1,5 +1,6 @@
 package com.lemwoodmc.launcher
 
+import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -16,10 +17,15 @@ import com.lemwoodmc.launcher.ui.theme.LmcTheme
  *  1) 普通模式：主页内嵌 SurfaceView（AndroidView）+ Compose 悬浮控制层叠加；
  *  2) 极致模式：跳转 [com.lemwoodmc.launcher.game.GameActivity]（NativeActivity），
  *     ANativeWindow 与 AInputQueue 全程由 native 层直连，Java 侧零参与。
+ *
+ * 锁定传感器横屏：游戏 Surface 的尺寸与 MC 窗口（overrideWidth/Height、
+ * pojavexec 的 bridge window）在启动时一次性绑定，中途旋转会导致画面
+ * 撕裂错位（真机 2026-10-01：竖屏启动 + 横屏运行 → 左右分区错位）。
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         // 深色 UI 固定使用浅色（白）系统栏图标，不跟随系统亮暗
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),

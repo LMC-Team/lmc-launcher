@@ -21,8 +21,11 @@
 #include <jni.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -154,6 +157,46 @@ Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeSetOomAdj(JNIEnv*, jobject
 // ------------------------------------------------------------------
 // JVM 运行时层
 // ------------------------------------------------------------------
+
+// 纯 native 线程跑 JVM（pthread）：HotSpot 与 MC main 都在该线程上运行，
+// 该线程不属于 ART —— pojavexec calculateFPS 的 Attach→Call→Detach
+// （onGraphicOutput 首帧回调）对其是合法序列。若 JVM 跑在 ART 线程
+// （协程 worker）上，Detach 会命中 ART 的 "detach while still running
+// code" abort（真机 2026-10-01，debug/release 均崩）。
+static std::thread g_jvmThread;
+static std::atomic<jint> g_jvmExitCode{-1};
+static std::atomic<bool> g_jvmThreadDone{false};
+
+JNIEXPORT void JNICALL
+Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeCreateJvmOnNewThread(
+        JNIEnv* env, jobject, jstring javaHome, jobjectArray jvmArgs,
+        jstring mainClass, jobjectArray mainArgs) {
+    // 参数在当前线程取成值拷贝（GetStringUTFChars 的指针跨线程无效）
+    auto* a = new lmc::JvmRunArgs{
+        toStdString(env, javaHome), toStringVector(env, jvmArgs),
+        toStdString(env, mainClass), toStringVector(env, mainArgs)};
+    g_jvmThreadDone.store(false);
+    g_jvmThread = std::thread([a] {
+        lmc::setupJvmProcessEnvironment(a->javaHome);
+        const lmc::JvmLaunchResult r =
+            lmc::createJvmAndRunMain(a->javaHome, a->jvmArgs, a->mainClass, a->mainArgs);
+        if (!r.errorMessage.empty()) LOGE("JVM 启动失败: %s", r.errorMessage.c_str());
+        g_jvmExitCode.store(r.exitCode);
+        g_jvmThreadDone.store(true);
+        delete a;
+    });
+    g_jvmThread.detach();
+    // JVM 线程就绪后，把 GC/JIT 服务线程迁到小核（原 nativeCreateJvm 的行为）
+    if (lmc::isJvmAlive()) lmc::bindJvmServiceThreadsToLittleCores();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeWaitJvmExit(JNIEnv*, jobject) {
+    while (!g_jvmThreadDone.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return g_jvmExitCode.load();
+}
 
 JNIEXPORT jint JNICALL
 Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeCreateJvm(

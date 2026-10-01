@@ -63,8 +63,13 @@ fun GameScreen(onExit: () -> Unit) {
                     holder.addCallback(object : SurfaceHolder.Callback2 {
                         override fun surfaceCreated(holder: SurfaceHolder) {}
                         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                            // surface 就绪 → 触发完整启动链（渲染环境 → 音频 → oom_adj → 绑核 → JVM）
-                            vm.launchOnSurface(holder.surface, width, height)
+                            if (!vm.isJvmStarted) {
+                                // surface 就绪 → 触发完整启动链（渲染环境 → 音频 → oom_adj → 绑核 → JVM）
+                                vm.launchOnSurface(holder.surface, width, height)
+                            } else {
+                                // JVM 运行中的尺寸变化（旋转/重布局）：重注入桥窗口
+                                vm.onSurfaceSizeChanged(holder.surface, width, height)
+                            }
                         }
                         override fun surfaceDestroyed(holder: SurfaceHolder) {
                             vm.onSurfaceDestroyed()
@@ -72,6 +77,24 @@ fun GameScreen(onExit: () -> Unit) {
                         override fun surfaceRedrawNeeded(holder: SurfaceHolder) {}
                     })
                     setZOrderMediaOverlay(false)
+                    // ---- 触摸桥：触摸 → CallbackBridge 事件流 → pojavexec 输入桥 ----
+                    // 单指模拟鼠标：DOWN/MOVE = 移动+左键按下，UP = 左键抬起。
+                    // 坐标 1:1（MC 窗口尺寸 = glfwstub.windowWidth/Height = Surface 物理尺寸）。
+                    setOnTouchListener { _, event ->
+                        when (event.actionMasked) {
+                            android.view.MotionEvent.ACTION_DOWN -> {
+                                vm.sendTouch(event.x, event.y, true)
+                            }
+                            android.view.MotionEvent.ACTION_MOVE -> {
+                                vm.sendTouch(event.x, event.y, null)
+                            }
+                            android.view.MotionEvent.ACTION_UP,
+                            android.view.MotionEvent.ACTION_CANCEL -> {
+                                vm.sendTouch(event.x, event.y, false)
+                            }
+                        }
+                        true
+                    }
                 }
             },
             modifier = Modifier.fillMaxSize(),

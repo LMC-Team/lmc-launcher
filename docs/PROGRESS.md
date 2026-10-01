@@ -463,3 +463,206 @@ pojavexec 的渲染初始化序列（pojavInit → pojavCreateContext → MakeCu
 - 确认 Zalith glfw-classes 的 GL 函数表（Functions.Init 等）与 pojavexec 导出一致
 - pojavInit 需在 GL 线程调用；gl_setup_window 从 callback 获取 ANativeWindow
 - 我们的 ZLBridge.setupBridgeWindow 已注入 Surface ✓（ANativeWindow 可用）
+
+## 2026-10-01：路线收敛——Zalith 2 同源组件栈（重大转折）
+
+### 深读 ZalithLauncher 2 源码（E:\zl2，GPL-3.0）的结论
+
+**Zalith 2 已经抛弃 Pojav 官方组件链，jni/ 目录自研全套桥库**：
+- libpojavexec（275KB）/ libpojavexec_awt / libexithook / libdriver_helper
+  全部由其仓库 `ZalithLauncher/src/main/jni/` 编译（Android.mk），
+  依赖链干净：pojavexec → driver_helper + 系统库（无 FCL/bytehook 长链）
+- dex 契约全新精简：org.lwjgl.glfw.CallbackBridge（302 行，nativeSendXXX
+  统一事件流，input_bridge_v3.c 消费）+ ZLBridge（87 行，14 方法）+
+  ZLNativeInvoker（剪贴板/退出回调）+ LoggerBridge
+- **窗口注入就一行**：`ZLBridge.setupBridgeWindow(surface)`（egl_bridge.c 的
+  ANativeWindow_fromSurface）——没有 MinecraftGLSurface 请求-响应模式，
+  没有 pojavStartPumping！我们之前的注入方向本来就是对的
+- **渲染初始化序列**（egl_bridge.c）：glfwInit → pojavInit →
+  ANativeWindow_acquire(pojavWindow) → pojavInitOpenGL（POJAV_RENDERER
+  分发）→ br_init/br_setup_window（gl4es 桥建 EGL context）
+- **启动序列**（Launcher.kt）：setLdLibraryPath → setenv(POJAV_*) →
+  dlopen JRE 链（ZLBridge.dlopen，递归 locateLibs）→ dlopen libopenal →
+  setupExitMethod + initializeGameExitHook + chdir → VMLauncher.launchJVM
+- **关键 JVM 参数**：`-Dglfwstub.initEgl=false`（EGL 由桥接层管理，缺失
+  导致 no current context！）、jna.boot.library.path、glfwstub.windowW/H、
+  ActiveProcessorCount、Mio patcher 走 -javaagent（非主类替换）
+- LWJGL java 类经 assets/components/lwjgl3/lwjgl-glfw-classes.jar
+  （3.3.6-snapshot，与 natives 同源）释放进 HotSpot classpath
+
+**旧混合生态（FCL pojavexec + Zalith jar 混装）的全部配对问题就此消解**：
+37 个断点中绝大多数是跨 APK 组件配对，Zalith 2 单仓库全套自洽。
+
+### 已完成的移植（本日）
+
+1. dex 契约四件套替换/新增：CallbackBridge（Zalith 2 dex 版）、ZLBridge
+   （完整 14 方法）、ZLBridgeStates.kt、ZLNativeInvoker.kt（lmc 裁剪版）、
+   NativeLibraryLoader（exithook→pojavexec→awt 加载序）
+2. EfficientAndroidLWJGLKeycode 键码映射入源码树
+3. libpojavexec(_awt)/exithook/driver_helper/bytehook/linkerhook/c++_shared
+   打进 APK jniLibs（app/src/main/jniLibs/arm64-v8a，zl2 构建产物；
+   libbytehook/libc++_shared 用 pickFirsts 选 zl2 版）
+4. GameViewModel 启动序列完全重写（Zalith 三段式 + lmc 性能层叠加）：
+   主线程 setupBridgeWindow → 后台 setLdLibraryPath/setenv/dlopenJRE/
+   options.txt 预写（fullscreen=false、overrideWidth/Height、narrator）/
+   JVM 参数（glfwstub.initEgl=false 等）/ 退出钩子三连 / launchJVM
+5. 输入路径切换：ControlOverlay → GameViewModel → CallbackBridge 事件流
+   （Android 键码经 EfficientAndroidLWJGLKeycode 映射）
+6. FCLBridge.java 删除；LmcPojavBridgeHelper 收敛为 Kotlin↔桥的中间层
+7. lwjgl-glfw-classes.jar（10.8MB）入 app/libs/zalith2/（运行时资产，
+   **不进 dex**——jar 里的 CallbackBridge 与 dex 版同名不同空间）
+8. scripts/deploy_zalith2_stack.sh：natives 白名单 + LWJGL jar 一键部署
+9. packaging：doNotStrip 全部 so（本机 NDK 为 linux 版无法 strip，发布
+   构建在 Linux 机器上做）
+
+### 本机工具链落位（Windows 构建环境首次跑通）
+
+- SDK：E:\android-sdk-home（local.properties 已指向）
+- JDK：E:\jdk21（Temurin 21.0.12）；Gradle 发行版换腾讯镜像
+- NDK：E:\android-tools\android-sdk\ndk\27.1.12297006（r27b）——原
+  android-sdk-home/ndk/27.2 是指向已删 /e/tmp 的坏符号链接，gradle 钉版
+  已同步改为 r27b
+- build-tools 35.0.0 换 Windows 版（原 34/35 均为 Linux 版缺 aapt.exe）；
+  platform-tools 换 Windows 版（adb 1.0.41 可用）
+- `-Plmc.nativeBuild=false` 可跳过 C++ 编译（本机 NDK 是 linux-x86_64 版
+  无法交叉编译；Windows 版 NDK 或 WSL 待补）
+- **Kotlin→Java 混编坑**：Kotlin 直接引用新桥 Java 类（org.lwjgl.glfw.
+  CallbackBridge / com.movtery.zalithlauncher.game.input / ZLBridge 静态
+  方法）全部 unresolved——疑似跨语言循环依赖（Kotlin→Java→Kotlin 常量）
+  触发 Kotlin 2.0.21 的 Java stub 解析失败。解法：Kotlin 只调
+  LmcPojavBridgeHelper（Java 中间层），Java 内部再调桥类。已验证通过。
+
+### 编译状态
+
+:app:compileDebugKotlin BUILD SUCCESSFUL；assembleDebug 已通（除 strip
+已被 doNotStrip 跳过外）。
+
+### 下一步
+
+1. natives 部署：scripts/deploy_zalith2_stack.sh deploy 1.21.4（设备）
+2. 清理设备 libs/ 混存旧 FCL 组件（libfcl、旧 bytehook、mio wrapper jar）
+3. 真机验证：预期通过版本校验 + pojavInit acquire 成功 → EGL context →
+   标题画面（gl4es 路径 POJAV_RENDERER=opengles）
+4. C++ 层：Windows 侧补 NDK 或在 Linux 机构建 liblmc_core.so（JNI 入口
+   23 个与 native 实现已核对对齐）
+
+## 2026-10-01 下午：真机实弹冲刺——启动链全通，MC 抵达纹理加载（重大突破）
+
+设备：Poco F3（M2012K11AC，Android 13），adb 直连本机完成全部部署与调试。
+
+### 启动链里程碑（逐层真机验证）
+
+```
+✅ APK 安装（jniLibs: libpojavexec/_awt/exithook/driver_helper/linkerhook/bytehook）
+✅ lmc_core JNI_OnLoad（NDK r27b Windows 版本机编译！见下）
+✅ Zalith 桥窗口注入（1080x2276）
+✅ SELinux 放行 dlopen（targetSdk=28 生效，avc granted libjli/libz/shmem/spawn）
+✅ bytehook/exithook 初始化
+✅ ZLBridge.dlopen JRE 全链（固定链 + 递归多轮收敛，36/40 成功）
+✅ JVM 创建（lmc_core JNI_CreateJavaVM，纯 native 线程）
+✅ Termux JRE 21.0.12 + MC 1.21.4 main 执行
+✅ LWJGL 3.3.6-snapshot 全模块加载（与 Zalith natives 配对成功）
+✅ libgl4es_114/libOSMesa_8 渲染库加载成功（两个渲染器都试过）
+✅ Turnip 驱动线程活动（com.lemw:ir3q0-3，Mesa gallium freedreno/kgsl）
+✅ MC 推进至 Datafixer → Environment → Setting user → 纹理图集批量创建
+⏳ 卡点：atlas stitching 后挂起（Thread-17 100% CPU 自旋，见下）
+```
+
+### 真机修复清单（每一项都是一个断点）
+
+38. **LoggerBridge$EventLogListener.onEventLogged** —— stub 写成 onEventLog
+    （少 "ged"），GetStaticMethodID null → CheckJNI abort。签名必须逐字符对齐。
+39. **gcId DataStore fallback `?: 0`（ZGC）** —— Termux JRE 上 ZGC 的 NUMA
+    探测被 seccomp 杀（旧断点 #8 复发）；fallback 改 1（Parallel）+ 强制回落。
+40. **libinstrument/libiconv** —— -javaagent 触发 JVM 加载 libinstrument.so，
+    其依赖 libiconv（termux-deps）未部署 → VM 初始化失败。解包 4 个 termux
+    deb 补进 jre21/lib，dlopenJavaRuntime 改多轮收敛（依赖序无关）。
+41. **Mio/cacio agent 暂禁** —— agent 的 processJavaStart 依赖 pojavexec 的
+    pojav_environ.dalvikJNIEnvPtr_ANDROID（仅 VMLauncher 路径赋值）。
+42. **JLI_Launch（VMLauncher）静默死亡** —— 卡在 dlopen("libjli.so") 后无任何
+    输出（Boardwalk 时代 sigaction 重置 + Termux JRE 组合），改用 lmc_core 的
+    JNI_CreateJavaVM 路径（9-28 已验证）。
+43. **onGraphicOutput 回调 abort** —— JVM 跑在 ART 协程线程时，calculateFPS
+    的 Attach→Call→Detach 命中 ART "detach while still running code" abort。
+    解法（正解）：**新增 lmc_core 入口 nativeCreateJvmOnNewThread**（pthread 跑
+    JVM），线程不属于 ART，回调序列合法。dex 方法名必须保留 onGraphicOutput
+    （缺失会 pending NoSuchMethodError，后续 FindClass abort——两头都要对）。
+44. **Windows 工具链补齐** —— NDK r27b Windows 版（dl.google.com 781MB）+
+    cmake 3.22.1 Windows 版安装到 E:\android-sdk-home；本机现已能完整构建
+    （C++ + Kotlin），不再依赖 Linux 机器。lint 的 ExpiredTargetSdkVersion 已禁用。
+45. **渲染器切换 gl4es→Freedreno/Turnip** —— gl4es 的 GL 3.x 入口缺失
+    （LWJGL 报 "entry point is missing"），1.21.4 卡死在函数指针探测。
+    POJAV_RENDERER=gallium_freedreno + LIB_MESA_NAME=libOSMesa_8.so +
+    POJAV_NATIVEDIR 指向设备 natives 目录（三件套缺一即 dlsym_OSMesa abort）。
+
+### 当前唯一卡点：atlas stitching 后挂起
+
+现象：MC 线程全部正常（Sound 引擎报 OpenAL 设备打不开后被 MC 自行关闭——
+非致命），纹理图集批量创建完成后无新日志；无名 Java 线程 "Thread-17"
+100% CPU 自旋（R 状态，累计 9 分钟），Render thread 睡眠；Turnip 的
+ir3 shader 编译线程（com.lemw:ir3q0-3）sleeping。gl4es/Turnip 两渲染器
+现象一致 → 与渲染后端无关。SIGQUIT 线程 dump 被 ART Signal Catcher 的
+sigwait 吞掉（两 JVM 同进程的信号竞争），SIGABRT 未产出 hs_err。
+
+### 下一步（按优先级）
+
+1. **Thread-17 栈捕获**：lmc_core 加 native 线程栈 unwinder（本机已可编译
+   C++），或试 SIGQUIT 直发 HotSpot：先 `kill -STOP` ART Signal Catcher
+   （tid 29983）再发 SIGQUIT，绕开 sigwait 竞争。
+2. Thread-17 身份候选：LWJGL/glfwstub 的某 Java 线程、MC 的后备线程池、
+   text2speech fallback。拿到栈即破。
+3. 备选实验：KopperZinkRenderer（libglxshim.so）/ 删 -XX:TieredStopAtLevel=1
+   （emulated-client 模式嫌疑）/ 换 heap 与 GC 组合。
+4. OpenAL 设备打开失败待修（alsoft.conf 的 drivers=null 未生效，配置文件
+   路径需 ALSA/OpenAL 搜索路径确认）。
+
+### 环境资产新增
+
+- E:\android-sdk-home\ndk\27.1.12297006 = **Windows 版 r27b**（原 Linux 版
+  符号链接已替换）；cmake\3.22.1 = Windows 版
+- gradle 完整构建命令：`JAVA_HOME=E:/jdk21 sh gradlew assembleDebug`（不再
+  需要 -Plmc.nativeBuild=false；**切勿再带该参数**，会静默把 lmc_core 排出 APK）
+- 设备数据：files/{runtime/jre21, versions/1.21.4(+termux libs), openalsoft}
+
+## 2026-10-01 晚:MobileGlues 集成 —— 标题画面达成 🎉
+
+**MC 1.21.4 主菜单在真机完整渲染**:
+Logo / Singleplayer / Multiplayer / Realms / Options / Quit 全部就位,
+MobileGlues(OpenGL 4.0 on GLES 3.2)GL 链完全工作。
+
+### 渲染错误修复(柠枺指路 MobileGL-Dev)
+
+46. **画面撕裂根因**:启动时 Surface 为竖屏 1080x2276,运行中转横屏后
+    MC 仍按旧尺寸渲染 → 左右分区错位。修复:MainActivity 锁传感器横屏 +
+    surfaceChanged 时重注入桥窗口(onSurfaceSizeChanged)。
+47. **MobileGlues 插件协议接入**:新增 RendererPluginLoader(裁剪 zl2
+    RendererPluginManager 协议)——扫描已装插件的 manifest meta-data
+    (fclPlugin/renderer/pojavEnv),自动注入 POJAV_RENDERER=opengles3、
+    POJAVEXEC_EGL/LIBGL_EGL、LIBGL_ES=3 等;插件 so 目录进库搜索路径;
+    -Dorg.lwjgl.opengl.libname=<插件dir>/libmobileglues.so。
+    MobileGlues_2.0.0.apk 已装设备(com.fcl.plugin.mobileglues)。
+
+### 触摸桥(单指=鼠标)
+
+48. SurfaceView 触摸 → CallbackBridge 事件流:DOWN/MOVE=cursorPos,
+    DOWN/UP=mouseButton(0)。**hover 生效**(菜单按钮白色高亮边框证明
+    cursor 事件全链跨 ART↔HotSpot 工作)。fullscreen 已改 true。
+
+### 当前断点:click 不触发(第 49 号)
+
+hover 有效但 press+release 不激活按钮。事件链结构上 cursor/button 同构
+(critical_send_mouse_button 与 cursor_pos 同条件:GLFW_invoke_* 与
+isInputReady,后者已被 hover 证明为 true)。嫌疑集中:
+- GLFW_invoke_MouseButton 为 NULL(MC 注册链路未走通?)
+- showingWindow 句柄与 MC 注册时的 window 不一致
+- mouseDownBuffer 跨 DSO 可见性
+下一步:给 lmc_core 加跨线程栈 unwinder,或 logcat 抓 input_bridge 的
+LOGD(cursor 链有 debug 日志,button 链无——可先给 button 加同款日志重编
+pojavexec……需要 zl2 的 jni 构建,NDK 已就位可直接编)。
+
+### 备注
+
+- adb 模拟点击需用实际坐标(截图缩略坐标×1080/512)
+- authlib 网络异常(MinecraftClient.readInputStream)为离线模式正常噪音
+- OpenAL 设备打开失败(SoundSystem 被 MC 自行关闭)——alsoft.conf 的
+  drivers=null 未生效,待查配置搜索路径

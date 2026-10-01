@@ -31,6 +31,14 @@ JvmLaunchResult createJvmAndRunMain(const std::string& javaHome,
                                     const std::string& mainClass,
                                     const std::vector<std::string>& mainArgs);
 
+/** 新线程跑 JVM 的参数包（JNI 层值拷贝后跨线程传递） */
+struct JvmRunArgs {
+    std::string javaHome;
+    std::vector<std::string> jvmArgs;
+    std::string mainClass;
+    std::vector<std::string> mainArgs;
+};
+
 /** 请求销毁 JVM（游戏异常退出后的清理路径） */
 bool destroyJvm();
 

@@ -1,29 +1,30 @@
 package com.movtery.zalithlauncher.bridge;
 
-import android.content.Context;
-
 /**
- * Zalith 日志桥（dex 版 stub）：
- * libpojavexec 的 JNI_OnLoad 会 FindClass 本类并绑定 native 方法
- * （游戏 stdout/stderr 转发到 launcher 日志视图）。
- * 骨架阶段实现为 logcat 直通。
+ * Zalith 日志桥（对齐 ZalithLauncher LoggerBridge）。
+ *
+ * libpojavexec 的 stdio_is.c 实现约定：
+ *  - start(logPath)：redirect stdout/stderr → pipe → 日志线程写文件并回调监听
+ *  - FindClass "LoggerBridge$EventLogListener" + GetMethodID
+ *    "onEventLogged(Ljava/lang/String;)V" —— 方法名必须精确（真机踩坑：
+ *    onEventLog 少两个字母 → GetMethodID null → CheckJNI abort）
  */
 public class LoggerBridge {
 
     public interface EventLogListener {
-        void onEventLog(String log);
+        void onEventLogged(String log);
     }
 
     private static volatile EventLogListener listener;
 
-    /** 启动日志转发（native 侧把游戏输出回调到 append） */
+    /** 启动日志转发（native 侧 redirect stdio + 后台线程回调监听） */
     public static native void start(String logFilePath);
 
-    /** native 侧日志回调（PUBLIC STATIC NATIVE） */
+    /** native 侧日志回调 */
     public static native void append(String log);
 
     public static void appendTitle(String title) {
-        android.util.Log.i("LMC-Game", "==== " + title + " ====");
+        append("==================== " + title + " ====================");
     }
 
     public static native void setListener(EventLogListener l);

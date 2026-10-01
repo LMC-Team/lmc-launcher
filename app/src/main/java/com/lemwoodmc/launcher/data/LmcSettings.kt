@@ -72,7 +72,7 @@ class SettingsRepository(private val context: Context) {
     val settings: Flow<LmcSettings> = context.dataStore.data.map { p ->
         LmcSettings(
             heapSizeMb = p[Keys.heapSizeMb] ?: 3072,
-            gcId = p[Keys.gcId] ?: 0,
+            gcId = p[Keys.gcId] ?: 1,
             appCds = p[Keys.appCds] ?: true,
             graalNativeImage = p[Keys.graalNative] ?: false,
             renderModeId = p[Keys.renderModeId] ?: 0,
@@ -93,7 +93,7 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { prefs ->
             val current = LmcSettings(
                 heapSizeMb = prefs[Keys.heapSizeMb] ?: 3072,
-                gcId = prefs[Keys.gcId] ?: 0,
+                gcId = prefs[Keys.gcId] ?: 1,
                 appCds = prefs[Keys.appCds] ?: true,
                 graalNativeImage = prefs[Keys.graalNative] ?: false,
                 renderModeId = prefs[Keys.renderModeId] ?: 0,

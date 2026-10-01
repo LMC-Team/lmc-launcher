@@ -1,72 +1,119 @@
 package com.lemwoodmc.launcher.bridge;
 
-import android.content.ClipboardManager;
+import android.app.Activity;
+import android.content.Context;
 
 /**
- * Pojav 生态桥接辅助（Java 实现，规避 Kotlin 对新增 java 包的编译顺序问题）：
- * libpojavexec 的 JNI_OnLoad 需要 ART dex classpath 上存在
- * org.lwjgl.glfw.CallbackBridge（由 CallbackBridge.java 源码提供），
- * 其剪贴板回调依赖该静态剪贴板管理器引用。
+ * Pojav/Zalith 生态桥接辅助（Zalith 2 路线收敛版）。
+ *
+ * 旧 FCL 混合生态（libfcl 长依赖链 + FCLBridge + 混装 so）已废弃：
+ * 现全部组件与 Zalith 2 同源——libpojavexec(_awt)/exithook 打进 APK
+ * jniLibs（ZLBridge 静态块 System.loadLibrary 加载），渲染栈 so
+ * （gl4es/Mesa/LWJGL natives）部署于设备 natives/ 目录。
  */
 public final class LmcPojavBridgeHelper {
     private LmcPojavBridgeHelper() {}
 
-    public static void injectClipboard(ClipboardManager cm) {
-        org.lwjgl.glfw.CallbackBridge.GLOBAL_CLIPBOARD = cm;
+    /** 注入游戏宿主 Activity（ZLNativeInvoker 的剪贴板/退出回调使用） */
+    public static void injectActivity(Activity activity) {
+        com.movtery.zalithlauncher.bridge.ZLNativeInvoker.setGameActivity(activity);
     }
 
-    /** 注入启动器 Activity 引用（CallbackBridge 的 UI 回调使用） */
-    public static void injectActivity(android.app.Activity activity) {
-        org.lwjgl.glfw.CallbackBridge.sLauncherActivity = activity;
+    /** 注入应用上下文（CallbackBridge.accessAndroidClipboard 使用） */
+    public static void injectAppContext(Context context) {
+        org.lwjgl.glfw.CallbackBridge.appContext = context;
     }
 
     /**
-     * FCL 窗口启动序列：加载 libfcl/pojavexec_awt/pojavexec（ART 注册）→
-     * FCLBridge.execute → redirectStdio → CallbackBridge.setupBridgeWindow
-     * （ANativeWindow 注入 pojavexec，GLFW 后端 acquire 用）。
-     */
-
-    /**
-     * 把游戏 Surface 注入 libpojavexec（GLFW 窗口后端）：
-     * CallbackBridge.setupBridgeWindow(Object) → native 侧
-     * ANativeWindow_fromSurface 保存。不注入则 glfwCreateWindow 后
-     * ANativeWindow_acquire(NULL) SIGSEGV（真机踩坑）。
+     * 把游戏 Surface 注入 libpojavexec（egl_bridge 的窗口后端）：
+     * ANativeWindow_fromSurface 保存，pojavInit 时 acquire。
+     * 必须在 HotSpot 启动前、主线程调用（Surface 由 UI 生命周期产生）。
      */
     public static void setupBridgeWindow(android.view.Surface surface, int width, int height) {
+        com.movtery.zalithlauncher.bridge.ZLBridge.setupBridgeWindow(surface);
         org.lwjgl.glfw.CallbackBridge.windowWidth = width;
         org.lwjgl.glfw.CallbackBridge.windowHeight = height;
-        org.lwjgl.glfw.CallbackBridge.setupBridgeWindow(surface);
-    }
-
-    /**
-     * FCL 窗口启动序列：加载 libfcl/pojavexec_awt/pojavexec（ART 注册）→
-     * FCLBridge.execute → redirectStdio → CallbackBridge.setupBridgeWindow
-     * （ANativeWindow 注入 pojavexec，GLFW 后端 acquire 用）。
-     */
-    public static void fclWindowSequence(String nativesDir, android.view.Surface surface, String logPath) {
-        loadFclLibs(nativesDir);
-        com.tungsten.fclauncher.bridge.FCLBridge bridge = new com.tungsten.fclauncher.bridge.FCLBridge();
-        bridge.setLogPath(logPath);
-        bridge.execute(surface, new com.tungsten.fclauncher.bridge.FCLBridge.FCLBridgeCallback() {
-            @Override public void onCursorModeChange(int mode) {}
-            @Override public void onLog(String log) {}
-            @Override public void onExit(int code) {}
-        });
-    }
-
-        /** JVM 启动：VMLauncher.launchJVM（pojavexec 封装的 JVM 入口） */
-    public static int launchJVM(String[] args) {
-        return com.oracle.dalvik.VMLauncher.launchJVM(args);
-    }
-
-    /** Zalith 原生窗口注入路径：ZLBridge.setupBridgeWindow + 窗口尺寸同步 */
-    public static void zalithSetupBridgeWindow(android.view.Surface surface, int width, int height) {
-        com.movtery.zalithlauncher.bridge.ZLBridge.setupBridgeWindow(surface);
+        org.lwjgl.glfw.CallbackBridge.physicalWidth = width;
+        org.lwjgl.glfw.CallbackBridge.physicalHeight = height;
         org.lwjgl.glfw.CallbackBridge.sendUpdateWindowSize(width, height);
     }
 
     /**
-     * Zalith 启动配方的环境变量注入器（Os.setenv 的异常安全封装）。
+     * 首帧输出监听：pojavexec 的 calculateFPS 在第一帧时回调 dex 侧
+     * CallbackBridge.onGraphicOutput → 本监听（UI 层切换“渲染中”状态）。
+     */
+    public static void setGraphicOutputListener(
+            org.lwjgl.glfw.CallbackBridge.GraphicOutputListener listener) {
+        org.lwjgl.glfw.CallbackBridge.setGraphicOutputListener(listener);
+    }
+
+    /** JVM 启动：VMLauncher.launchJVM（pojavexec 的 JVM 封装入口） */
+    public static int launchJVM(String[] args) {
+        return com.oracle.dalvik.VMLauncher.launchJVM(args);
+    }
+
+    // ------------------------------------------------------------------
+    // Kotlin 侧统一入口（GameViewModel 只调用本类，不直接触碰桥类：
+    //   规避 Kotlin→Java 混编在本机的解析问题 + 单点收口便于诊断）
+    // ------------------------------------------------------------------
+
+    /** Android 键码 → GLFW 键码 → 事件流（对齐 Zalith GameHandler 输入路径） */
+    public static void sendKeyByAndroidCode(int androidKeyCode) {
+        int index = com.movtery.zalithlauncher.game.input.EfficientAndroidLWJGLKeycode
+                .getIndexByKey(androidKeyCode);
+        if (index >= 0) {
+            com.movtery.zalithlauncher.game.input.EfficientAndroidLWJGLKeycode
+                    .execKeyIndex(index);
+        }
+    }
+
+    /** 指针事件：action 0=down 1=up 2=move */
+    public static void sendPointerEvent(int action, float x, float y, int button) {
+        switch (action) {
+            case 0 -> org.lwjgl.glfw.CallbackBridge.sendMouseButton(button, true);
+            case 1 -> org.lwjgl.glfw.CallbackBridge.sendMouseButton(button, false);
+            default -> org.lwjgl.glfw.CallbackBridge.sendCursorPos(x, y);
+        }
+    }
+
+    /** 触摸桥：光标位置 + 左键状态（触摸桥专用，坐标 1:1） */
+    public static void sendCursorPos(float x, float y) {
+        org.lwjgl.glfw.CallbackBridge.sendCursorPos(x, y);
+    }
+
+    public static void sendMouseButtonEvent(int button, boolean pressed) {
+        org.lwjgl.glfw.CallbackBridge.sendMouseButton(button, pressed);
+    }
+
+    public static void sendScrollEvent(float xOffset, float yOffset) {
+        org.lwjgl.glfw.CallbackBridge.sendScroll(xOffset, yOffset);
+    }
+
+    /** HotSpot 侧库搜索路径（pojavexec native 侧记录） */
+    public static void zalithSetLdLibraryPath(String path) {
+        com.movtery.zalithlauncher.bridge.ZLBridge.setLdLibraryPath(path);
+    }
+
+    /** pojavexec 的 native dlopen（namespace 正确的 JRE/引擎库加载通道） */
+    public static boolean zalithDlopen(String soPath) {
+        return com.movtery.zalithlauncher.bridge.ZLBridge.dlopen(soPath);
+    }
+
+    public static void zalithSetupExitMethod(Context context) {
+        com.movtery.zalithlauncher.bridge.ZLBridge.setupExitMethod(context);
+    }
+
+    public static void zalithInitializeGameExitHook() {
+        com.movtery.zalithlauncher.bridge.ZLBridge.initializeGameExitHook();
+    }
+
+    /** 进程 CWD 切换（MC 日志相对路径依赖；返回 0=成功） */
+    public static int zalithChdir(String path) {
+        return com.movtery.zalithlauncher.bridge.ZLBridge.chdir(path);
+    }
+
+    /**
+     * 环境变量注入器（Os.setenv 的异常安全封装）。
      * libpojavexec 的 env_init 读取 POJAV_* 系列决定渲染后端与窗口行为。
      */
     public static final class EnvPutter {
@@ -79,45 +126,5 @@ public final class LmcPojavBridgeHelper {
         }
 
         public void commit() {}
-    }
-
-    /**
-     * ART 侧加载 libpojavexec.so（绝对路径）：
-     * 其 JNI_OnLoad 会在本进程默认运行时（ART）里向 dex classpath 上的
-     * org.lwjgl.glfw.CallbackBridge 注册桥方法，必须先于 HotSpot 启动完成。
-     */
-    public static void loadPojavExec(String nativesDir) {
-        System.load(nativesDir + "/libpojavexec.so");
-    }
-
-    /** CallbackBridge 类初始化 + Activity 注入（需在 libpojavexec 加载后、HotSpot 启动前） */
-    public static void initCallbackBridge(android.app.Activity activity) {
-        // 触发 CallbackBridge.<clinit>（此时 loadLibrary 已被裁剪为 no-op，无异常）
-        Class<?> cls = org.lwjgl.glfw.CallbackBridge.class;
-        android.util.Log.i("LMC", "CallbackBridge 初始化完成: " + cls.getName());
-    }
-
-    /** ART 侧加载 libfcl.so + libpojavexec_awt.so + libpojavexec.so（FCLBridge 的 native 实现；
-     *  pojavexec 必须经 System.load 注册进 ART libraries 列表，
-     *  否则 CallbackBridge.setupBridgeWindow 的 native 解析失败） */
-    public static void loadFclLibs(String nativesDir) {
-        System.load(nativesDir + "/libfcl.so");
-        System.load(nativesDir + "/libpojavexec_awt.so");
-        System.load(nativesDir + "/libpojavexec.so");
-    }
-
-    /**
-     * 把游戏 Surface 交给 libpojavexec（GLFW 窗口后端）：
-     * MC 调 glfwCreateWindow 时，pojavexec 用此窗口做 ANativeWindow_acquire。
-     * 不注入则 glfwInit 后第一次 acquire(NULL) 直接 SIGSEGV（真机踩坑）。
-     */
-    public static void setupBridgeWindow(android.view.Surface surface,
-                                         int windowWidth, int windowHeight,
-                                         int physicalWidth, int physicalHeight) {
-        org.lwjgl.glfw.CallbackBridge.windowWidth = windowWidth;
-        org.lwjgl.glfw.CallbackBridge.windowHeight = windowHeight;
-        org.lwjgl.glfw.CallbackBridge.physicalWidth = physicalWidth;
-        org.lwjgl.glfw.CallbackBridge.physicalHeight = physicalHeight;
-        org.lwjgl.glfw.CallbackBridge.setupBridgeWindow(surface);
     }
 }
