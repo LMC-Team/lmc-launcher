@@ -175,12 +175,16 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             val args = buildJvmArgs(cfg, filesDir, nativesDir, width, height, rendererPlugin)
 
             // 6) MC 主类与启动参数
+            // --assetsDir/--assetIndex 必传:否则 MC 找不到资源对象,
+            // 全部声音 Missing(真机 2026-10-01:assets/ 部署后仍静音即此因)
             val baseArgs = if (cfg.gameArgs.isEmpty()) {
                 listOf(
                     "--gameDir", mcHome.absolutePath,
                     "--version", cfg.versionId,
                     "--accessToken", "0",
                     "--username", "Player",
+                    "--assetsDir", File(mcHome, "assets").absolutePath,
+                    "--assetIndex", "19", // assets/indexes/19.json(1.21.4)
                 )
             } else cfg.gameArgs
             val versionJson = File(filesDir, "versions/${cfg.versionId}/version.json")

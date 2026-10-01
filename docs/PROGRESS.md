@@ -769,3 +769,17 @@ LMC 已是一只五脏俱全的 Minecraft 启动器。
   MC 主菜单右下(语言/辅助功能)与暂停菜单右列按钮;新增 ⎋(Esc,关闭
   GUI 的唯一路径)与 F3(调试屏)
 - 真机:世界渲染完整,准星/hotbar 居中无黑边,控制层不挡界面
+
+## 2026-10-01 深夜 II:声音完全修复(#56)
+
+- **真因**:GameViewModel 启动参数缺 `--assetsDir/--assetIndex` —— assets
+  部署到设备后 MC 依然不知道去哪读,全部 "Missing sound for event";
+  补参数后资源线程开始读 objects,又暴露 BMCLAPI /assets/<hash> 无桶
+  路径 404 的静默丢失(1445 个对象),导致 NoSuchFileException 崩溃
+- **补齐**:python + 官方 resources.download.minecraft.net(直写最终路径、
+  size 校验、断窗感知整批重试),1445 个对象全部补齐(本地 4419 文件/
+  tar 410MB),推设备 416MB
+- **验证**:Missing=0 / NoSuchFile=0 / Oboe Default ✓ / Sound engine
+  started ✓ / Player joined ✓ —— 声音链(引擎+设备+资源)三全
+- 经验:这台机器国际网络断窗频繁,BMCLAPI 无桶路径缺对象;
+  官方 resources 域 + 断窗感知整批重试是正解
