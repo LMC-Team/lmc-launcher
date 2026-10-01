@@ -54,6 +54,8 @@ fun GameScreen(onExit: () -> Unit) {
                 android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
+    // 系统返回键 = 退出游戏画面(替代已删除的"退出"按钮)
+    androidx.activity.compose.BackHandler { onExit() }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // ---- 游戏渲染层：SurfaceView（绕过 Compose 绘制，零合成开销） ----
@@ -131,13 +133,8 @@ fun GameScreen(onExit: () -> Unit) {
             }
         }
 
-        // ---- 退出按钮 ----
-        Button(
-            onClick = onExit,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 32.dp, end = 8.dp),
-        ) { Text("退出") }
+        // 退出按钮已移除(玩家反馈右上角白透明块挡画面):退出走系统返回键
+        // (onBackPressed → GameScreen onDispose → onExit 恢复导航)
 
         // ---- 悬浮控制层（可整体隐藏 → Compose 树移除，游戏帧率不受 UI 影响） ----
         if (controlVisible) {
