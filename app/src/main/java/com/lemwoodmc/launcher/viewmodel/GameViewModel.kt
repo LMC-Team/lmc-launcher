@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.viewModelScope
 import com.lemwoodmc.launcher.bridge.GameLaunchConfig
 import com.lemwoodmc.launcher.bridge.GcType
@@ -249,7 +250,11 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
      * SurfaceView 触摸 → 鼠标（单指=左键）：
      * pressed=true 按下 / false 抬起 / null 仅移动。
      */
+    /** 虚拟鼠标光标的最新位置(px,游戏 Surface 坐标系),供 Compose 层绘制可见光标 */
+    val cursorPosition = mutableStateOf<androidx.compose.ui.geometry.Offset?>(null)
+
     fun sendTouch(x: Float, y: Float, pressed: Boolean?) {
+        cursorPosition.value = androidx.compose.ui.geometry.Offset(x, y)
         LmcPojavBridgeHelper.sendCursorPos(x, y)
         if (pressed != null) {
             LmcPojavBridgeHelper.sendMouseButtonEvent(0, pressed)
@@ -257,6 +262,9 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun toggleControlLayer() { _controlVisible.value = !_controlVisible.value }
+
+    /** 显式设置控制层可见性（悬浮球菜单的开关行用） */
+    fun setControlVisible(v: Boolean) { _controlVisible.value = v }
     fun setControlOpacity(v: Float) {
         _controlOpacity.value = v
         viewModelScope.launch { repo.update { it.copy(controlOpacity = v) } }

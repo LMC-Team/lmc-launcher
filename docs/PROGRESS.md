@@ -783,3 +783,34 @@ LMC 已是一只五脏俱全的 Minecraft 启动器。
   started ✓ / Player joined ✓ —— 声音链(引擎+设备+资源)三全
 - 经验:这台机器国际网络断窗频繁,BMCLAPI 无桶路径缺对象;
   官方 resources 域 + 断窗感知整批重试是正解
+
+## 2026-10-01 深夜 III:zl2 控制层真移植(#57)
+
+### 引擎整体移植(不再仿制,直接搬代码)
+
+- **LayerController 模块**(54 文件,zl2 仓库内子模块)整体拷入 lmc:
+  控件布局引擎(ObservableControlLayout/渲染/编辑/序列化),依赖
+  kotlinx-serialization 1.8.1
+- **InputMap 模块**(7 文件)拷入:键码映射(ControlEventKeycode 等)
+- settings include + 根 serialization 插件 + buildToolsVersion=35 钉版
+- 两模块 BUILD SUCCESSFUL
+
+### 接入层
+
+- **LmcControlManager**:布局加载(files/control_layouts,assets 默认布局
+  释放)+ EventHandler(ClickEvent → ControlEventKeycode → CallbackBridge
+  按键/鼠标事件流,zl2 lwjglEvent 同构)
+- **GameScreen**:ControlBoxLayout 渲染 zl2 布局;悬浮球 + 双菜单保留;
+  旧自制 ControlOverlay 退役
+- **default_layout.json**:zl2 默认布局(GUI/Tab/Esc/E/F3/F5/Tab/T/输入法/
+  虚拟鼠标区左键右键);move 层注入 W/A/S/D/跳/潜 6 按钮(zl2 默认无移动键,
+  它靠 TouchController 滑动库——后续评估移植)
+- **虚拟鼠标光标**:zl2 鼠标层核心行为移植——触摸位置画 MC 箭头光标
+  (白填充黑描边),真机验证显示 ✓
+- eventHandler 加 LmcControl 日志通道(诊断"点击失效"待进世界实测)
+
+### 待验证/待办
+
+- 游戏内 zl2 控件点击事件链实测(LmcControl 日志)
+- 鼠标层完整行为(grab 感知:grab 时隐藏光标)
+- Esc 点击失效根查(日志通道已备)

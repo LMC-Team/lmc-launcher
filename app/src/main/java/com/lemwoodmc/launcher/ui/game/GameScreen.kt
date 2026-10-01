@@ -22,9 +22,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Settings
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lemwoodmc.launcher.viewmodel.GameViewModel
 
@@ -56,6 +62,7 @@ fun GameScreen(onExit: () -> Unit) {
     }
     // 系统返回键 = 退出游戏画面(替代已删除的"退出"按钮)
     androidx.activity.compose.BackHandler { onExit() }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Box(modifier = Modifier.fillMaxSize()) {
         // ---- 游戏渲染层：SurfaceView（绕过 Compose 绘制，零合成开销） ----
@@ -102,6 +109,33 @@ fun GameScreen(onExit: () -> Unit) {
             modifier = Modifier.fillMaxSize(),
         )
 
+        // ---- 虚拟鼠标光标(zl2 鼠标层核心行为):跟随触摸移动的可见箭头 ----
+        val cursor = vm.cursorPosition.value
+        if (cursor != null && state.phase == GameViewModel.Phase.RENDERING) {
+            val cx = cursor.x
+            val cy = cursor.y
+            androidx.compose.foundation.Canvas(
+                Modifier
+                    .fillMaxSize()
+                    .padding(0.dp)
+            ) {
+                //MC 经典箭头形(白色填充 + 黑描边),锚点在箭头尖
+                val s = 18.dp.toPx()
+                val path = androidx.compose.ui.graphics.Path()
+                path.moveTo(cx, cy)
+                path.lineTo(cx + s * 0.42f, cy + s * 0.72f)
+                path.lineTo(cx + s * 0.60f, cy + s * 0.52f)
+                path.lineTo(cx + s * 0.78f, cy + s * 0.94f)
+                path.lineTo(cx + s * 0.94f, cy + s * 0.86f)
+                path.lineTo(cx + s * 0.76f, cy + s * 0.46f)
+                path.lineTo(cx + s * 0.98f, cy + s * 0.30f)
+                path.close()
+                drawPath(path, color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx()))
+                drawPath(path, color = androidx.compose.ui.graphics.Color.White)
+            }
+        }
+
         // ---- 状态角标（JVM 启动中 / 温度预警）：半透明胶囊 ----
         M3Surface(
             color = Color.Black.copy(alpha = 0.55f),
@@ -136,17 +170,8 @@ fun GameScreen(onExit: () -> Unit) {
         // 退出按钮已移除(玩家反馈右上角白透明块挡画面):退出走系统返回键
         // (onBackPressed → GameScreen onDispose → onExit 恢复导航)
 
-        // ---- 悬浮控制层（可整体隐藏 → Compose 树移除，游戏帧率不受 UI 影响） ----
-        if (controlVisible) {
-            ControlOverlay(
-                opacity = controlOpacity,
-                onKey = vm::sendKey,
-                onPointer = vm::sendPointer,
-                onHide = vm::toggleControlLayer,
-                onOpacityChange = vm::setControlOpacity,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
+        // 旧自制 ControlOverlay 已由 zl2 控件布局引擎(LayerController)替代,
+        // 控件样式/位置由 control_layouts/*.json 布局文件驱动,可在编辑器中自定义。
 
         // ---- 游戏日志悬浮框（左上角，可展开/收起，5 秒刷新） ----
         val gameLogLines = remember { mutableStateListOf<String>() }
@@ -171,6 +196,86 @@ fun GameScreen(onExit: () -> Unit) {
                     .align(Alignment.TopStart)
                     .padding(top = 84.dp, start = 8.dp),
             )
+        }
+
+        // ---- zl2 同款：悬浮球 + 两侧菜单 ----
+        var ballX by remember { mutableStateOf(-1f) }
+        var ballY by remember { mutableStateOf(0f) }
+        var menuOpen by remember { mutableStateOf(false) }
+        if (ballX < 0f) {
+            //默认顶部居中
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            ballX = with(density) { 240.dp.toPx() }
+        }
+        GameBall(
+            position = Offset(ballX, ballY),
+            onPositionChanged = { ballX = it.x; ballY = it.y },
+            onClick = { menuOpen = !menuOpen },
+            opened = menuOpen,
+            modifier = Modifier.fillMaxSize(),
+        )
+        DualMenuSubscreen(
+            visible = menuOpen,
+            close = { menuOpen = false },
+            leftTitle = "启动器控制",
+            leftContent = {
+                MenuSwitchRow(
+                    "显示悬浮控制层",
+                    checked = controlVisible,
+                    onChange = vm::setControlVisible,
+                )
+                MenuSliderRow(
+                    "控制层不透明度",
+                    value = controlOpacity,
+                    range = 0.2f..1f,
+                    onChange = vm::setControlOpacity,
+                )
+                MenuRowButton(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    label = "退出游戏（返回启动器）",
+                    onClick = onExit,
+                )
+            },
+            rightTitle = "游戏诊断",
+            rightContent = {
+                MenuRowButton(
+                    icon = Icons.Filled.Info,
+                    label = "切换 F3 调试屏",
+                    onClick = { vm.sendKey(292, true); vm.sendKey(292, false) },
+                )
+                MenuRowButton(
+                    icon = Icons.Filled.Settings,
+                    label = "发送 Esc（关闭当前 GUI）",
+                    onClick = { vm.sendKey(256, true); vm.sendKey(256, false) },
+                )
+                MenuRowButton(
+                    icon = Icons.Filled.Build,
+                    label = "强制关闭游戏进程",
+                    onClick = {
+                        android.os.Process.killProcess(android.os.Process.myPid())
+                    },
+                )
+            },
+        )
+
+        // ---- zl2 控件布局引擎渲染(LayerController):从布局文件加载可编辑控件 ----
+        if (controlVisible) {
+            LaunchedEffect(Unit) {
+                com.lemwoodmc.launcher.game.control.LmcControlManager
+                    .checkDefaultAndRelease(context)
+                com.lemwoodmc.launcher.game.control.LmcControlManager
+                    .loadControlLayout(context.filesDir)
+            }
+            val observed = com.lemwoodmc.launcher.game.control.LmcControlManager.observableLayout
+            com.movtery.layer_controller.ControlBoxLayout(
+                modifier = Modifier.fillMaxSize(),
+                observedLayout = observed,
+                eventHandler = com.lemwoodmc.launcher.game.control.LmcControlManager.eventHandler,
+                isCursorGrabbing = false,
+                checkOccupiedPointers = { false },
+                opacity = controlOpacity,
+                isDark = true,
+            ) {}
         }
     }
 }

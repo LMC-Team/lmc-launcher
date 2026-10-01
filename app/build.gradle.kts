@@ -112,6 +112,9 @@ android {
 }
 
 dependencies {
+    // zl2 同源控制层:控件布局引擎 + 键码映射(GPL)
+    implementation(project(":LayerController"))
+    implementation(project(":InputMap"))
     // ---- AndroidX / Compose（版本均可在 google() 仓库检索） ----
     val composeBom = platform("androidx.compose:compose-bom:2024.09.03") // https://androidx.dev / maven.google.com
     implementation(composeBom)

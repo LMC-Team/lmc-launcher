@@ -7,4 +7,5 @@ plugins {
     id("org.jetbrains.kotlin.android") version "2.0.21" apply false
     // Compose 编译器插件（Kotlin 2.x 起 Compose 编译器随 Kotlin 一起发布，来源 mavenCentral）
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.0.21" apply false
 }

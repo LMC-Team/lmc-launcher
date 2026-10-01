@@ -30,3 +30,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "LMCLauncher"
 include(":app")
+// zl2(ZalithLauncher 2)同源控制层:控件布局引擎与键码映射库(GPL)
+include(":InputMap")
+include(":LayerController")
