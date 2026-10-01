@@ -51,16 +51,21 @@ private data class ControlButton(
     val yFrac: Float,
 )
 
-// GLFW 键码：W=87 A=65 S=83 D=68 Space=32 Shift=340 E=69 Q=81
+// GLFW 键码：W=87 A=65 S=83 D=68 Space=32 Shift=340 E=69 Q=81 Esc=256 F3=292
+// 布局原则：右侧按钮全部贴边(x≥0.94)，给 MC 菜单(中央/右下按钮区)让位
 private val DEFAULT_BUTTONS = listOf(
-    ControlButton("↑", 87, 0.09f, 0.60f),
-    ControlButton("↓", 83, 0.09f, 0.78f),
-    ControlButton("←", 65, 0.03f, 0.69f),
-    ControlButton("→", 68, 0.15f, 0.69f),
-    ControlButton("跳", 32, 0.88f, 0.64f),
-    ControlButton("潜", 340, 0.88f, 0.80f),
-    ControlButton("E", 69, 0.76f, 0.64f),
-    ControlButton("Q", 81, 0.76f, 0.80f),
+    ControlButton("↑", 87, 0.06f, 0.58f),
+    ControlButton("↓", 83, 0.06f, 0.76f),
+    ControlButton("←", 65, 0.005f, 0.67f),
+    ControlButton("→", 68, 0.12f, 0.67f),
+    ControlButton("跳", 32, 0.945f, 0.60f),
+    ControlButton("潜", 340, 0.945f, 0.76f),
+    ControlButton("E", 69, 0.945f, 0.42f),
+    ControlButton("Q", 81, 0.945f, 0.90f),
+    // Esc 关闭 GUI/呼出暂停菜单（MC 无实体按键路径，缺失会卡在背包/菜单里）；
+    // F3 调试屏（诊断窗口尺寸/性能）
+    ControlButton("⎋", 256, 0.945f, 0.26f),
+    ControlButton("F3", 292, 0.945f, 0.10f),
 )
 
 @Composable
@@ -125,11 +130,11 @@ fun ControlOverlay(
 
         // ---- 右键按钮（配合虚拟鼠标区） ----
         KeyButton(
-            button = ControlButton("右键", -2, 0.82f, 0.50f),
+            button = ControlButton("右键", -2, 0.85f, 0.50f),
             opacity = opacity,
             editMode = editMode,
             onKey = { _, pressed -> onPointer(if (pressed) 0 else 1, 0f, 0f, 1) },
-            baseOffset = IntOffset((0.82f * w).roundToInt(), (0.50f * h).roundToInt()),
+            baseOffset = IntOffset((0.85f * w).roundToInt(), (0.50f * h).roundToInt()),
         )
 
         // ---- 控制条：编辑模式 / 透明度 / 隐藏 ----
