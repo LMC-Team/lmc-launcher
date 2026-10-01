@@ -530,11 +530,14 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             add("-XX:CICompilerCount=$it")
             add("-XX:-CICompilerCountPerCPU")
         }
-        // Termux JRE 的 C2 在部分 OEM 内核上生成崩溃代码；换补丁版 JRE 后可移除
-        add("-XX:TieredStopAtLevel=1")
+        // JIT:完整分层编译(C1+C2)。9-28 曾因 ART 线程时代的 C2 崩溃疑虑
+        // 加 -XX:TieredStopAtLevel=1,现 JVM 已迁至纯 native 线程,且
+        // Zalith 对同一 Termux JRE 不做任何 JIT 限制 —— 该开关会让长期
+        // 性能损失 30-50%(server tick 2-4s 的主因之一),已移除。
         add("-XX:ActiveProcessorCount=${java.lang.Runtime.getRuntime().availableProcessors()}")
-        val hasJavaAgent = true // Mio patcher 与 cacio agent 均为 javaagent，与 CDS 互斥
-        if (cfg.appCds && !hasJavaAgent) {
+        // javaagent 与 CDS 互斥。cacio/mio agent 均已移除（#38 轮），CDS 可用：
+        // AppCDS 类存档显著加速类加载（首启自动创建 archive，次启生效）
+        if (cfg.appCds) {
             add("-XX:SharedArchiveFile=${File(filesDir, "cache/app.jsa").absolutePath}")
             add("-XX:+AutoCreateSharedArchive")
             add("-Xshare:auto")

@@ -746,3 +746,15 @@ WASD 移动(长按虚拟按键)                ✓
 
 JVM → 主菜单(panorama) → 点击交互 → 进世界 → 视角/移动/挖掘 → **声音**。
 LMC 已是一只五脏俱全的 Minecraft 启动器。
+
+## 2026-10-01 夜:性能调优(#54)——tick 警告清零
+
+- **移除 `-XX:TieredStopAtLevel=1`**:9-28 ART 线程时代的 C2 崩溃疑虑遗留,
+  禁用 C2 让长期性能损失 30-50%。Zalith 对同一 Termux JRE 不做任何 JIT
+  限制 —— 同源策略验证:开启完整 C1+C2 分层编译后 C2 无崩溃
+- **恢复 AppCDS**:cacio/mio agent 移除后 javaagent 互斥条件不再成立
+  (原硬编码 hasJavaAgent=true),CDS archive 自动创建生效
+- **真机对比**(进世界 2 分钟):
+  - "Can't keep up" 警告:之前 5+ 次 → **0 次**
+  - 玩家进度 2 → 5 个,交互明显流畅
+  - 玩家实测:背包/合成(3 原木→4 木板)界面完整渲染正常
