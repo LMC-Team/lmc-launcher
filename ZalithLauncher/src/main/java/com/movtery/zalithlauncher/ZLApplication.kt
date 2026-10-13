@@ -63,6 +63,26 @@ class ZLApplication : Application(), SingletonImageLoader.Factory {
         //初始化任务保活控制器，需在任何任务开始前完成初始化
         TaskKeepAlive.initialize(this)
 
+        // ---- LMC 核心自检(zl2-shell)----
+        // 验证 lmc_core 在本进程可加载并可用(initRuntime 幂等,
+        // launcher 启动游戏时会再次调用,直接命中 initialized 快速返回)
+        runCatching {
+            val bridge = com.lemwoodmc.launcher.bridge.NativeBridge
+            bridge.nativeInitCore(
+                applicationInfo.nativeLibraryDir,
+                filesDir.absolutePath,
+                cacheDir.absolutePath,
+            )
+            bridge.nativeDetectCpuTopology()
+        }.onSuccess { topology ->
+            Logger.info("LMCCore", "[LMC] lmc_core 自检通过,CPU 拓扑: $topology")
+            // 直写 logcat(不依赖壳 Logger 的落盘):adb logcat -s LMCCore
+            android.util.Log.i("LMCCore", "[LMC] lmc_core 自检通过,CPU 拓扑: $topology")
+        }.onFailure { t ->
+            Logger.error("LMCCore", "[LMC] lmc_core 自检失败", t)
+            android.util.Log.e("LMCCore", "[LMC] lmc_core 自检失败", t)
+        }
+
         Thread.setDefaultUncaughtExceptionHandler { _, th ->
             //停止所有任务
             TaskSystem.stopAll()

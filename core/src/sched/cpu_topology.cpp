@@ -78,14 +78,20 @@ CpuTopology detectCpuTopology() {
         topo.clusters.push_back(c);
     }
 
-    // 大核判定：频率 ≥ 最高簇的 70% 的簇都归入大核。
-    // 覆盖三簇 SoC（骁龙 870 = 1+3+4）：超大核与中核（A78 @2.42GHz ≈ 超大核 85%）
-    // 同属大核，游戏主线程绑定 4 核而非 1 核，避免渲染/GC 线程与主线程挤在单核上；
-    // 典型 4+4 双簇（A55 1.8GHz / A78 2.8GHz，比值 63%）仍正确区分大小核。
+    // 大核判定：频率 ≥ 最高簇的 80% 的簇归入大核。
+    // 三簇 SoC（骁龙 870 = 1+3+4，真机实测）：
+    //   簇0 A55×4 @1.800GHz = 最高簇(2.496GHz) 的 72%  → 小核 ✓
+    //   簇1 A77×3 @2.400GHz = 96%                      → 大核 ✓
+    //   簇2 A77×1 @2.496GHz                            → 大核 ✓
+    //   → 游戏主线程绑 [4,5,6,7] 四个大核。
+    // 注：阈值原为 70%，但 870 实测 A55 达 72.3% 会被误判为大核，
+    // 导致绑核覆盖全部 8 核、失去"绑大核"意义；80% 可正确区分。
+    // 典型 4+4 双簇（A55 1.8GHz / A78 2.8GHz，比值 63%）与
+    // 8 Gen 系三簇（A55 1.8 / 中核 2.5 / 超大核 3.0~3.2）均正确。
     // 同构系统（单簇）：全部归大核，littleCpus 为空，调用方跳过绑核。
     const uint64_t topFreq = topo.clusters.back().maxFreqKHz;
     for (auto& c : topo.clusters) {
-        c.isBig = (static_cast<uint64_t>(c.maxFreqKHz) * 10 >= topFreq * 7);
+        c.isBig = (static_cast<uint64_t>(c.maxFreqKHz) * 10 >= topFreq * 8);
         if (c.isBig) {
             topo.bigCpus.insert(topo.bigCpus.end(), c.cpus.begin(), c.cpus.end());
         } else {
