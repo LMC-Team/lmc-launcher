@@ -1,8 +1,9 @@
 # 性能对比报告:lmc 集成版 vs 原版 ZalithLauncher
 
-**日期**:2026-10-13 深夜
+**日期**:2026-10-13/14(两台设备)
 **测试人**:LMC(自动化基准脚本)+ 柠枺(设置同步)
-**设备**:vivo PD2456(骁龙 SM7635,8 核 1+3+4:A55×4@1.80G / A77×3@2.40G / A77×1@2.50G),Android 16,USB 供电,屏幕亮度 255(全程未变)
+**设备 A**:vivo PD2456(骁龙 SM7635,8 核 1+3+4:A55×4@1.80G / A77×3@2.40G / A77×1@2.50G),Android 16,USB 供电,屏幕亮度 255(全程未变)
+**设备 B**:Redmi K40 / Poco F3(骁龙 SM8250,8 核 1+3+4:A55×4@1.80G / A77×3@2.42G / A77×1@3.19G),Android 13(MIUI),USB 供电
 
 ---
 
@@ -94,3 +95,44 @@ sh bench_cmp.sh <包名> <标签> <on|off|na>
 
 开关文件机制:在 app 外部私有目录放置 `lmc_disable`(chmod 666)即完全跳过
 lmc 性能层,同一 APK 可做 A/B。
+
+---
+
+## 六、设备 B(Poco F3)复测(2026-10-14 凌晨)
+
+### 6.1 环境搭建(从零)
+
+- 设备 B 只装了原版 zl2 2.6.1(空游戏目录),无任何 MC 资源
+- 资源来源:设备上残留的旧独立启动器 `com.lemwoodmc.launcher`(可 run-as)
+  内有完整 MC 1.21.4(client.jar + 官方 libraries + assets + 一个世界)
+- PC 端重组为 zl2 标准布局,并补齐官方清单缺的 59 个库(16.7MB,sha1 校验)
+- 应柠枺要求改用**优化整合包**:Modrinth 下载 **Fabulously Optimized 8.2.0
+  for 1.21.4**(48 个 mod,40MB),fabric-loader 0.19.3,组装为自包含版本
+  `FO-1.21.4`(mainClass=KnotClient,vanilla libraries + fabric libraries 合并)
+- 同一份资源复制进两个启动器的默认游戏目录,双方同世界/同设置/同账号
+
+### 6.2 结果:三方全部锁在 30 fps,无区分度
+
+| 轮次 | 配置 | FPS(10 样本) |
+|---|---|---|
+| A | 集成版,lmc 开 | 30,30,30,30,30,30,30,30,30,30 |
+| B | 集成版,**同 APK lmc 关** | 30 ×10 |
+| C | 原版 2.6.1 | 30 ×10 |
+
+三个配置**逐帧一致地锁在 30 fps**。已排除的因素:MC 设置(vsync=false、
+maxFps=260、inactivityFpsLimit=off 均已写入)、lmc 性能层(开/关一致)、
+渲染器(双方同用 MobileGlues 2.0.0)。
+
+定位:MIUI 把屏幕锁在 **60Hz**(支持 90/120 但 adb `cmd display
+set-user-preferred-display-mode` 被拒),游戏以半速率呈现。这是**设备级
+帧率策略**,在解除前,该设备上的 FPS 对比无区分度 —— **lmc 在锁帧下
+无损失也无收益(与设备 A 的"中性"结论一致)**。
+
+### 6.3 本轮新发现的工程问题
+
+| 问题 | 实测证据 | 建议 |
+|---|---|---|
+| 大核判定阈值在 SD870 上失效 | 870 中核 2.419GHz / 超大核 3.187GHz = 75.9% < 80% 阈值 → 中核三颗被判小核,**游戏主线程只绑 [7] 单核**;vivo 上比值 96% 无此问题 | 改用 `cpu_capacity`(该设备实测 313/777/777/1024,清晰三档),频率阈值仅作回落 |
+| zl2 对 fabric 库的解析要求 | 自造 `{name,url}` 库条目 → zl2 解析崩溃(IndexOutOfBounds);缺 `downloads.artifact`(path/sha1/size)→ KnotClient 找不到(classpath 缺失) | 自包含 fabric 版本必须给**完整标准 maven 格式**;且 zl2 对部分库按 `<组尾段>-<artifact>.jar` 命名查找(如 `fabricmc-fabric-loader.jar`) |
+| MIUI 测试环境差异 | uiautomator 在游戏画面返回 null root;安装需人工确认;adb 无法强制刷新率 | 采样改用截图读数;装机需人工配合 |
+| MC 的 session.lock 时序 | session.lock 在世界**开始加载**时即写入,不代表已进世界 | 稳定期需 ≥75s(FO 首次加载更慢) |
