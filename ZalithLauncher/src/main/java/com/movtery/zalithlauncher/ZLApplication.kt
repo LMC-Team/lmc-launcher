@@ -66,23 +66,32 @@ class ZLApplication : Application(), SingletonImageLoader.Factory {
         // ---- LMC 核心自检(zl2-shell)----
         // 验证 lmc_core 在本进程可加载并可用(initRuntime 幂等,
         // launcher 启动游戏时会再次调用,直接命中 initialized 快速返回)
-        runCatching {
-            val bridge = com.lemwoodmc.launcher.bridge.NativeBridge
-            bridge.nativeInitCore(
-                applicationInfo.nativeLibraryDir,
-                filesDir.absolutePath,
-                cacheDir.absolutePath,
-            )
-            val topology = bridge.nativeDetectCpuTopology()
-            val bigCores = bridge.nativeGetBigCoreCount()
-            "拓扑: $topology | 大核数: $bigCores"
-        }.onSuccess { summary ->
-            Logger.info("LMCCore", "[LMC] lmc_core 自检通过,$summary")
-            // 直写 logcat(不依赖壳 Logger 的落盘):adb logcat -s LMCCore
-            android.util.Log.i("LMCCore", "[LMC] lmc_core 自检通过,$summary")
-        }.onFailure { t ->
-            Logger.error("LMCCore", "[LMC] lmc_core 自检失败", t)
-            android.util.Log.e("LMCCore", "[LMC] lmc_core 自检失败", t)
+        // 基准对照:存在 lmc_disable 标记时完全不加载核心(同 APK 的 A/B)
+        val lmcDisabled = listOfNotNull(
+            getExternalFilesDir(null)?.let { java.io.File(it, "lmc_disable") },
+            java.io.File(filesDir, "lmc_disable"),
+        ).any { it.exists() }
+        if (lmcDisabled) {
+            android.util.Log.i("LMCCore", "[LMC] lmc_disable 标记存在:本进程跳过 lmc 核心")
+        } else {
+            runCatching {
+                val bridge = com.lemwoodmc.launcher.bridge.NativeBridge
+                bridge.nativeInitCore(
+                    applicationInfo.nativeLibraryDir,
+                    filesDir.absolutePath,
+                    cacheDir.absolutePath,
+                )
+                val topology = bridge.nativeDetectCpuTopology()
+                val bigCores = bridge.nativeGetBigCoreCount()
+                "拓扑: $topology | 大核数: $bigCores"
+            }.onSuccess { summary ->
+                Logger.info("LMCCore", "[LMC] lmc_core 自检通过,$summary")
+                // 直写 logcat(不依赖壳 Logger 的落盘):adb logcat -s LMCCore
+                android.util.Log.i("LMCCore", "[LMC] lmc_core 自检通过,$summary")
+            }.onFailure { t ->
+                Logger.error("LMCCore", "[LMC] lmc_core 自检失败", t)
+                android.util.Log.e("LMCCore", "[LMC] lmc_core 自检失败", t)
+            }
         }
 
         Thread.setDefaultUncaughtExceptionHandler { _, th ->

@@ -64,13 +64,11 @@ bool bindJvmServiceThreadsToLittleCores() {
         // 去掉换行
         for (char* p = comm; *p; ++p) if (*p == '\n') { *p = '\0'; break; }
 
-        // HotSpot 服务线程匹配表
+        // HotSpot 线程匹配表 —— 只迁移"纯后台"线程。
+        // 注意:GC(GC Thread#/G1 )与 JIT 编译线程(C1/C2 CompilerThread)不迁移!
+        // 它们参与 STW 停顿与后台编译,放到 A55 小核会显著拉长停顿
+        // (真机 A/B 实测:全量迁移使帧率下降 ~12%),由调度器自行安排更优。
         const bool isService =
-            strncmp(comm, "GC Thread", 9) == 0 ||      // Parallel/ZGC GC 工作线程
-            strncmp(comm, "G1 ", 3) == 0 ||            // G1 服务线程（若使用）
-            strncmp(comm, "C1 CompilerThread", 17) == 0 || // C1 JIT 编译线程
-            strncmp(comm, "C2 CompilerThread", 17) == 0 || // C2 JIT 编译线程
-            strcmp(comm, "VM Thread") == 0 ||
             strcmp(comm, "VM Periodic Task") == 0 ||
             strcmp(comm, "Service Thread") == 0 ||
             strcmp(comm, "Common-Cleaner") == 0 ||

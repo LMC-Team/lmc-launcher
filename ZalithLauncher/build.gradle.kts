@@ -89,6 +89,19 @@ android {
             versionNameSuffix = "-debug"
             signingConfig = signingConfigs.getByName("debugBuild")
         }
+        // 性能基准构建(zl2-shell 集成分支新增):
+        // 与 release 同级的 R8 优化(压缩/混淆/资源收缩),但
+        //   - 用独立 applicationId 后缀,与原版 zl2 共存以便同时对比;
+        //   - 签名沿用 debug 密钥(本机没有 release 的 store/key 口令);
+        //   - 非 debuggable,保持与正式版一致的表现。
+        create("benchmark") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".lmcbench"
+            versionNameSuffix = "-lmcbench"
+            signingConfig = signingConfigs.getByName("debugBuild")
+            // 依赖的库模块只有 debug/release 变体,benchmark 回落到它们的 release
+            matchingFallbacks += "release"
+        }
     }
 
     splits {
@@ -191,7 +204,11 @@ androidComponents {
                 }
 
                 (output.getFilter(ABI)?.identifier ?: "all").let { abi ->
-                    val baseName = "$launcherName-${if (variant.buildType == "release") launcherVersionName else "Debug-$launcherVersionName"}"
+                    val baseName = when (variant.buildType) {
+                        "release" -> "$launcherName-$launcherVersionName"
+                        "benchmark" -> "$launcherName-$launcherVersionName-lmc"
+                        else -> "$launcherName-Debug-$launcherVersionName"
+                    }
                     output.outputFileName = if (abi == "all") "$baseName.apk" else "$baseName-$abi.apk"
                 }
             }

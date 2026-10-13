@@ -190,14 +190,14 @@ abstract class Launcher(
         ).toMutableList()
         progressFinalUserArgs(args)
 
+        // ---- LMC JVM 优化(zl2-shell):JIT 编译线程数匹配大核 ----
+        // 必须在 launchArgs(含 -cp/主类/游戏参数)拼入之前加入:
+        // HotSpot 只把主类之前的参数当 JVM 选项,追加到末尾会被 MC 当
+        // 程序参数丢弃(真机实锤:"Completely ignored arguments")
+        applyLmcJvmTuning(args)
+
         args.addAll(jvmArgs)
         args.add(0, "$runtimeHome/bin/java")
-
-        // ---- LMC JVM 优化(zl2-shell):JIT 编译线程数匹配大核 ----
-        // HotSpot 分层编译的 CICompilerCount 默认按 CPU 数推断(8 核→8 组),
-        // 但游戏实际负载在 4 个大核上;按大核数配置可减少编译线程争抢,
-        // 把 CPU 时间留给渲染/GC。用户显式指定或关闭分层编译时跳过。
-        applyLmcJvmTuning(args)
 
         LoggerBridge.appendTitle("JVM Args")
         val iterator = args.iterator()
@@ -284,6 +284,17 @@ abstract class Launcher(
      * 两套渲染体系差异暂不接入,待渲染统一后再评估。
      */
     private fun applyLmcPerfLayer(context: Context) {
+        // ---- 基准对照开关(同 APK 的 A/B)----
+        // 存在 lmc_disable 标记文件时完全跳过 lmc 性能层(不加载核心、不绑核、
+        // 不启温度监控)。用于严格控制变量的对照实验:同一个 APK,仅开关差异。
+        val disableFlag = listOfNotNull(
+            context.getExternalFilesDir(null)?.let { java.io.File(it, "lmc_disable") },
+            java.io.File(context.filesDir, "lmc_disable"),
+        ).firstOrNull { it.exists() }
+        if (disableFlag != null) {
+            LoggerBridge.appendInfo("[LMC] 检测到 ${disableFlag.name}:跳过性能层(基准对照模式)")
+            return
+        }
         try {
             val filesDir = context.filesDir
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeInitCore(

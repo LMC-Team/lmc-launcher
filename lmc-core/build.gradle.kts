@@ -17,6 +17,9 @@ android {
 
     defaultConfig {
         minSdk = 26
+        // JNI 契约类不可混淆(标准 JNI 命名解析依赖原始类名/方法名),
+        // 以 consumer 规则下发给宿主(壳的 release 会开 R8)
+        consumerProguardFiles("consumer-rules.pro")
         externalNativeBuild {
             cmake {
                 // 只编真机架构(arm64),缩短构建时间
