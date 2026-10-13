@@ -552,6 +552,17 @@ abstract class Launcher(
             if (AllSettings.zinkPreferSystemDriver.getValue()) map["POJAV_ZINK_PREFER_SYSTEM_DRIVER"] = "1"
             if (AllSettings.vsyncInZink.getValue()) map["POJAV_VSYNC_IN_ZINK"] = "1"
 
+            // ---- LMC 渲染性能调优嵌入(zl2-shell)----
+            // 源自 lmc core/src/render/render_bridge.cpp 的 Zink 路径参数,
+            // 只取壳未设置、且无兼容风险的纯性能项(不覆盖壳的渲染器选择/
+            // GL 版本上报,那两项由壳的渲染体系负责):
+            //   ZINK_DESCRIPTORS=lazy —— 描述符惰性分配,降低 CPU 开销
+            //   ZINK_DEBUG=notexrect  —— 适配 MC 贴图矩形沿用行为
+            //   mesa_no_error=1       —— 关闭 GL 错误检查(性能优先)
+            map["ZINK_DESCRIPTORS"] = "lazy"
+            map["ZINK_DEBUG"] = "notexrect"
+            map["mesa_no_error"] = "1"
+
             if (FFmpegPluginManager.isAvailable) map["POJAV_FFMPEG_PATH"] = FFmpegPluginManager.executablePath!!
         }
     }
