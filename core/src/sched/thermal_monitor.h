@@ -17,10 +17,22 @@ enum class ThermalSeverity : int {
 
 using ThermalCallback = std::function<void(float predictedTempC, int horizonSec, ThermalSeverity severity)>;
 
+/** 温度快照（线程安全读取，供启动器 UI 状态面板展示） */
+struct ThermalSnapshot {
+    bool running = false;      // 监控线程是否在运行
+    float currentC = 0.0f;     // 最近一次采样的最高 CPU 温度（°C）
+    float predictedC = 0.0f;   // 最近一次外推预测温度（°C）
+    int severity = 0;          // 最近一次预警严重度（0/1/2）
+    int samples = 0;           // 历史样本数
+};
+
 /** 启动监控线程。重复调用会先停掉旧线程。 */
 bool startThermalMonitor(float thresholdC, float horizonSec, ThermalCallback cb);
 
 /** 停止监控线程（幂等） */
 void stopThermalMonitor();
+
+/** 读取温度快照（无副作用，可在任意线程调用） */
+ThermalSnapshot getThermalSnapshot();
 
 } // namespace lmc

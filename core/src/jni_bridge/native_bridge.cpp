@@ -162,6 +162,33 @@ Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeStopThermalMonitor(JNIEnv*
     lmc::stopThermalMonitor();
 }
 
+// 温度快照 JSON(供壳内"LMC 核心状态"面板实时展示)
+JNIEXPORT jstring JNICALL
+Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeGetThermalSnapshot(JNIEnv* env, jobject) {
+    const lmc::ThermalSnapshot s = lmc::getThermalSnapshot();
+    std::string json = "{\"running\":";
+    json += s.running ? "true" : "false";
+    json += ",\"currentC\":" + std::to_string(s.currentC);
+    json += ",\"predictedC\":" + std::to_string(s.predictedC);
+    json += ",\"severity\":" + std::to_string(s.severity);
+    json += ",\"samples\":" + std::to_string(s.samples);
+    json += "}";
+    return env->NewStringUTF(json.c_str());
+}
+
+// 游戏主线程当前绑定的核集 JSON,如 [4,5,6,7](尚未绑核返回 [])
+JNIEXPORT jstring JNICALL
+Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeGetGameThreadCpus(JNIEnv* env, jobject) {
+    const std::vector<int> cpus = lmc::getGameThreadCpus();
+    std::string json = "[";
+    for (size_t i = 0; i < cpus.size(); ++i) {
+        json += std::to_string(cpus[i]);
+        if (i + 1 < cpus.size()) json += ",";
+    }
+    json += "]";
+    return env->NewStringUTF(json.c_str());
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeSetOomAdj(JNIEnv*, jobject, jint adj) {
     return lmc::setOomScoreAdj(adj) ? JNI_TRUE : JNI_FALSE;

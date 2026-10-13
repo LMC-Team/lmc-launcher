@@ -65,6 +65,9 @@ private var lmcThermalAlertRegistered = false
 private var lmcLastThermalAlertAt = 0L
 private const val LMC_THERMAL_ALERT_COOLDOWN_MS = 30_000L
 
+// 运行状态文件写出开关(游戏进程生命周期内为 true)
+private val lmcStatusWriting = java.util.concurrent.atomic.AtomicBoolean(false)
+
 abstract class Launcher(
     val onExit: (code: Int, isSignal: Boolean) -> Unit,
     val openPath: (folder: File) -> Unit
@@ -294,6 +297,9 @@ abstract class Launcher(
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeBindGameThreadToBigCores()
             // 温度预警接壳内提示(Toast + 壳日志,30s 冷却防刷屏)
             setupLmcThermalAlert()
+            // 周期性写出运行状态文件(供启动器主进程的"LMC 核心状态"面板读取:
+            // 游戏运行在 :game 独立进程,native 静态状态不跨进程共享)
+            startLmcStatusWriter(context)
             LoggerBridge.appendInfo("[LMC] 性能层已接入(音频/oom_adj/温度监控/绑大核)")
 
             // JVM 服务线程(GC/C1/C2 编译/VM Thread 等)迁小核:
@@ -319,11 +325,54 @@ abstract class Launcher(
 
     /** LMC 性能层退出清理 */
     private fun teardownLmcPerfLayer() {
+        lmcStatusWriting.set(false)
         try {
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeStopThermalMonitor()
         } catch (t: Throwable) {
             // 忽略
         }
+    }
+
+    /**
+     * 周期性把 lmc 运行状态写入 <files>/lmc_status.json。
+     *
+     * 背景:zl2 的游戏运行在 :game 独立进程(AndroidManifest 中 VMActivity
+     * 声明 android:process=":game"),liblmc_core 的静态状态按进程隔离,
+     * 启动器主进程读不到游戏进程的绑核/温度。故由游戏进程落盘、主进程读取。
+     *
+     * 文件内容:
+     * {"ts":<毫秒>,"pid":<game pid>,"topology":{...},"gameCpus":[4,5,6,7],
+     *  "thermal":{"running":true,"currentC":62.5,"predictedC":...,"severity":0,...}}
+     */
+    private fun startLmcStatusWriter(context: Context) {
+        val file = java.io.File(context.filesDir, "lmc_status.json")
+        if (!lmcStatusWriting.compareAndSet(false, true)) return
+        val bridge = com.lemwoodmc.launcher.bridge.NativeBridge
+        Thread {
+            while (lmcStatusWriting.get()) {
+                try {
+                    val json = buildString {
+                        append("{\"ts\":").append(System.currentTimeMillis())
+                        append(",\"pid\":").append(android.os.Process.myPid())
+                        append(",\"topology\":").append(bridge.nativeDetectCpuTopology())
+                        append(",\"gameCpus\":").append(bridge.nativeGetGameThreadCpus())
+                        append(",\"thermal\":").append(bridge.nativeGetThermalSnapshot())
+                        append('}')
+                    }
+                    file.writeText(json)
+                } catch (_: Throwable) {
+                    // 单次写入失败不影响游戏
+                }
+                try {
+                    Thread.sleep(3_000L)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }.apply {
+            isDaemon = true
+            name = "lmc-status-writer"
+        }.start()
     }
 
     /**

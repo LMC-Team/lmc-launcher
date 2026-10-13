@@ -24,4 +24,16 @@ bool bindGameThreadToBigCores();
  */
 bool bindJvmServiceThreadsToLittleCores();
 
+/**
+ * 查询指定线程（tid = 0 表示当前线程）当前允许运行的 CPU 核集。
+ * 供启动器 UI 展示绑核结果；失败返回空。
+ */
+std::vector<int> getThreadAffinityCpus(int tid);
+
+/**
+ * 查询游戏主线程当前绑定的核集（bindGameThreadToBigCores 之后有效）。
+ * 尚未绑核或查询失败返回空。
+ */
+std::vector<int> getGameThreadCpus();
+
 } // namespace lmc

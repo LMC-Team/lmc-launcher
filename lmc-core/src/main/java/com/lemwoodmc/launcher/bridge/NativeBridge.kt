@@ -52,6 +52,17 @@ object NativeBridge {
 
     external fun nativeStopThermalMonitor()
 
+    /**
+     * 温度快照 JSON（供启动器 UI 展示）：
+     * `{"running":bool,"currentC":float,"predictedC":float,"severity":int,"samples":int}`
+     */
+    external fun nativeGetThermalSnapshot(): String
+
+    /**
+     * 游戏主线程当前绑定的核集 JSON，如 `[4,5,6,7]`；尚未绑核返回 `[]`。
+     */
+    external fun nativeGetGameThreadCpus(): String
+
     /** 调整 oom_score_adj，尽量让 lowmemorykiller 不杀游戏进程。返回是否成功。 */
     external fun nativeSetOomAdj(adj: Int): Boolean
 

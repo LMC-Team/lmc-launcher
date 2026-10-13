@@ -859,3 +859,46 @@ LMC 已是一只五脏俱全的 Minecraft 启动器。
   launcher.event.scroll_* 转 sendScroll;switch_menu 回调挂钩
 - **真机:左键按钮长按 2.5s → 挖掉 3 个方块(hotbar 空→3)** ✓
   LmcTouch/LmcControl 双日志通道保留(诊断用)
+
+## 2026-10-13:#66 壳内「LMC 核心状态」面板(跨进程状态可见化)
+
+### 新增 native 查询接口
+
+- `nativeGetThermalSnapshot()` → 温度快照 JSON(running/currentC/predictedC/severity/samples)
+  · thermal_monitor 增加原子快照(g_lastCurrentC/g_lastPredictedC/g_lastSeverity/
+    g_monitorActive),监控循环每 2s 更新;无副作用、任意线程可读
+- `nativeGetGameThreadCpus()` → 游戏主线程当前绑定的核集 JSON(如 [4,5,6,7])
+  · thread_affinity 记录绑核时的 gettid;新增 getThreadAffinityCpus(tid)
+    (sched_getaffinity)与 getGameThreadCpus()
+
+### UI:设置 → 关于 → 「LMC 核心状态」卡片
+
+- 实时展示:核心加载态 / CPU 大核数 / 小核数 / 游戏进程 / 游戏线程绑核 /
+  温度监控 / 当前温度 / 温度预警(2s 轮询,离开界面自动停)
+- **关键架构发现**:VMActivity 声明 `android:process=":game"` —— 游戏运行在
+  独立进程,native 静态状态按进程隔离,启动器主进程读不到游戏进程的绑核/温度
+- 解法:游戏进程周期(3s)把状态写入 `files/lmc_status.json`,主进程面板读取;
+  并用 /proc 扫描 `:game` 进程判存活,避免陈旧文件被误显示为"运行中"
+
+### 真机实证(骁龙 870)
+
+```
+LMC-Core: liblmc_core JNI_OnLoad 完成
+LMC-Core: CPU 拓扑: 8 核, 大核 [4,5,6,7], 小核 [0,1,2,3]
+LMC-Core: 温度监控启动: 阈值 80.0°C, 预测窗 8s
+LMC-Core: 游戏主线程 -> 大核 [4,5,6,7]: 成功
+LMC-Core: JVM 服务线程迁核: 16/85 -> 小核 [0,1,2,3]
+```
+
+- 状态文件实测:`"gameCpus":[4,5,6,7], "thermal":{"running":true,"currentC":67.0,
+  "predictedC":65.4,"severity":0,"samples":8}`
+- 面板实测(游戏运行中):游戏进程=运行中(:game) / 绑核=[4,5,6,7] / 温度监控=运行中
+  / 当前温度=51.5°C ✓
+- 面板实测(游戏停止):游戏进程=未运行 / 绑核=未绑定 / 温度监控=未运行 ✓
+
+### 已知限制
+
+- `oom_score_adj` 请求 -900 实际为 0:非 root 应用无权写负值 → 该优化在真机
+  为 no-op(lmc 原设计如此,Android 需 root 或 foreground service 保活;
+  zl2 本身已有保活机制,不阻塞)
+

@@ -19,6 +19,11 @@ namespace lmc {
 namespace {
 
 std::atomic<bool> g_running{false};
+std::atomic<bool> g_monitorActive{false};      // 监控是否已启动(供快照查询)
+std::atomic<float> g_lastCurrentC{0.0f};       // 最近采样温度
+std::atomic<float> g_lastPredictedC{0.0f};     // 最近外推预测
+std::atomic<int> g_lastSeverity{0};            // 最近预警严重度
+std::atomic<int> g_lastSamples{0};             // 历史样本数
 std::thread g_thread;
 
 // 收集所有 CPU 相关温区的当前温度（摄氏度）
@@ -69,6 +74,8 @@ void monitorLoop(float thresholdC, int horizonSec, ThermalCallback cb) {
         if (nowC > 0.0f) {
             history.push_back(nowC);
             if (history.size() > static_cast<size_t>(kWindowSize)) history.erase(history.begin());
+            g_lastCurrentC.store(nowC, std::memory_order_relaxed);
+            g_lastSamples.store(static_cast<int>(history.size()), std::memory_order_relaxed);
 
             if (history.size() >= 3) {
                 // 最小二乘拟合斜率（°C/秒）
@@ -89,15 +96,19 @@ void monitorLoop(float thresholdC, int horizonSec, ThermalCallback cb) {
 
                 // 外推 horizonSec 后温度；仅上坡（slope > 0.02 °C/s）时预警
                 const float predicted = history.back() + slope * horizonSec;
+                g_lastPredictedC.store(predicted, std::memory_order_relaxed);
                 if (predicted >= thresholdC && slope > 0.02f) {
                     // 严重度：离阈值越近越激进
                     ThermalSeverity sev = ThermalSeverity::Info;
                     const float overRatio = (predicted - thresholdC) / std::max(thresholdC, 1.0f);
                     if (overRatio > 0.05f) sev = ThermalSeverity::Aggressive;
                     else if (overRatio > 0.0f) sev = ThermalSeverity::ReduceScale;
+                    g_lastSeverity.store(static_cast<int>(sev), std::memory_order_relaxed);
                     LOGW("温度预警: 当前 %.1f°C, %ds 后预测 %.1f°C (阈值 %.1f)",
                          history.back(), horizonSec, predicted, thresholdC);
                     if (cb) cb(predicted, horizonSec, sev);
+                } else {
+                    g_lastSeverity.store(0, std::memory_order_relaxed);
                 }
             }
         }
@@ -110,14 +121,26 @@ void monitorLoop(float thresholdC, int horizonSec, ThermalCallback cb) {
 bool startThermalMonitor(float thresholdC, float horizonSec, ThermalCallback cb) {
     stopThermalMonitor();
     g_running.store(true);
+    g_monitorActive.store(true);
     g_thread = std::thread(monitorLoop, thresholdC, static_cast<int>(horizonSec), std::move(cb));
     LOGI("温度监控启动: 阈值 %.1f°C, 预测窗 %.0fs", thresholdC, horizonSec);
     return true;
 }
 
 void stopThermalMonitor() {
+    g_monitorActive.store(false);
     if (!g_running.exchange(false)) return;
     if (g_thread.joinable()) g_thread.join();
+}
+
+ThermalSnapshot getThermalSnapshot() {
+    ThermalSnapshot s;
+    s.running = g_monitorActive.load(std::memory_order_relaxed);
+    s.currentC = g_lastCurrentC.load(std::memory_order_relaxed);
+    s.predictedC = g_lastPredictedC.load(std::memory_order_relaxed);
+    s.severity = g_lastSeverity.load(std::memory_order_relaxed);
+    s.samples = g_lastSamples.load(std::memory_order_relaxed);
+    return s;
 }
 
 } // namespace lmc

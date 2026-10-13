@@ -8,8 +8,14 @@
 #include <dirent.h>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 
 namespace lmc {
+
+namespace {
+// 记录被绑核的游戏主线程 tid（bindGameThreadToBigCores 时写入），供 UI 查询
+std::atomic<int> g_gameThreadTid{0};
+}
 
 bool bindThreadToCpus(int tid, const std::vector<int>& cpus) {
     if (cpus.empty()) return false;
@@ -27,6 +33,7 @@ bool bindGameThreadToBigCores() {
     }
     // 0 表示调用线程自身
     const bool ok = bindThreadToCpus(0, topo.bigCpus);
+    if (ok) g_gameThreadTid.store(static_cast<int>(gettid()), std::memory_order_relaxed);
     LOGI("游戏主线程 -> 大核 [%s]: %s",
          joinCpus(topo.bigCpus).c_str(), ok ? "成功" : "失败");
     return ok;
@@ -76,6 +83,25 @@ bool bindJvmServiceThreadsToLittleCores() {
     LOGI("JVM 服务线程迁核: %d/%d -> 小核 [%s]",
          rebound, total, joinCpus(topo.littleCpus).c_str());
     return true;
+}
+
+std::vector<int> getThreadAffinityCpus(int tid) {
+    std::vector<int> out;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(static_cast<pid_t>(tid), sizeof(set), &set) != 0) return out;
+    const long n = sysconf(_SC_NPROCESSORS_CONF);
+    const int limit = static_cast<int>(n > 0 ? n : CPU_SETSIZE);
+    for (int i = 0; i < limit && i < CPU_SETSIZE; ++i) {
+        if (CPU_ISSET(i, &set)) out.push_back(i);
+    }
+    return out;
+}
+
+std::vector<int> getGameThreadCpus() {
+    const int tid = g_gameThreadTid.load(std::memory_order_relaxed);
+    if (tid <= 0) return {};
+    return getThreadAffinityCpus(tid);
 }
 
 } // namespace lmc
