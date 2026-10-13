@@ -26,3 +26,14 @@ runtime-assets/
 scripts/build-*/
 scripts/out/
 .workbuddy/
+
+# ============================================================
+# zl2 壳(集成分支)大体积二进制 —— 本地保留,不入库
+#   jniLibs/.so、JRE runtimes、预置 app_runtime 均可由上游 zl2
+#   同步或自行构建补齐(数百 MB,避免污染仓库)
+# ============================================================
+ZalithLauncher/jniLibs/
+ZalithLauncher/src/main/assets/runtimes/
+ZalithLauncher/src/main/assets/app_runtime/
+*.apk
+*.aab

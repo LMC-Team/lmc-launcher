@@ -1,37 +1,49 @@
-// LMC Launcher —— 高性能 Android Minecraft Java 版后端
-// 根构建脚本：声明仓库与模块
-//
-// 模块划分：
-//   app   —— Kotlin + Jetpack Compose 启动器 UI 层（Material 3）
-//   core  —— C++ 核心后端（NDK + CMake），以 :app 的 externalNativeBuild 方式编译为 liblmc_core.so
-//   （Mesa/Zink/Turnip 与 OpenJDK 由 scripts/ 下的独立脚本构建，产物放入应用 files 目录，不参与 Gradle）
-
 pluginManagement {
     repositories {
-        // 阿里云镜像在前（网络不稳时优先命中），原始仓库兜底
+        // 国内镜像优先(本机国际网络不稳)
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/central")
         maven("https://maven.aliyun.com/repository/gradle-plugin")
-        google()
+        google {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
         mavenCentral()
         gradlePluginPortal()
     }
 }
 
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version("0.8.0")
+}
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        // 国内镜像优先
         maven("https://maven.aliyun.com/repository/google")
         maven("https://maven.aliyun.com/repository/central")
         google()
         mavenCentral()
+        maven("https://jitpack.io")
     }
 }
 
-rootProject.name = "LMCLauncher"
-include(":app")
-// zl2(ZalithLauncher 2)同源控制层:控件布局引擎与键码映射库(GPL)
-include(":InputMap")
+rootProject.name = "LMC-Zl2Shell" // zl2 壳(LMC 核心嵌入分支;lmc_core 由 ZalithLauncher 模块的 externalNativeBuild 编入)
+include(":ZalithLauncher")
+include(":LWJGL")
+include(":LWJGL:patches")
+project(":LWJGL:patches").projectDir = file("LWJGL/patches")
+include(":LWJGL:lwjgl-3.3.3")
+project(":LWJGL:lwjgl-3.3.3").projectDir = file("LWJGL/3.3.3")
+include(":LWJGL:lwjgl-3.4.1")
+project(":LWJGL:lwjgl-3.4.1").projectDir = file("LWJGL/3.4.1")
 include(":LayerController")
 include(":ColorPicker")
+include(":CardGrid")
+include(":Terracotta")
+include(":InputMap")
 include(":Guide")
