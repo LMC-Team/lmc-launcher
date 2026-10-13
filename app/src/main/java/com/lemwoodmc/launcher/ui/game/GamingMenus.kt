@@ -58,6 +58,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -283,33 +284,89 @@ fun MenuSliderRow(label: String, value: Float, range: ClosedFloatingPointRange<F
 
 /**
  * 触摸桥(放 ControlBoxLayout 的 content 内,zl2 MouseControlLayout 的架构位):
- * 控件层 Initial pass 未命中控件的触摸落到这里 → 转发游戏鼠标事件流。
- * 命中控件的触摸被控件层 consume,不会到这里。
+ * 未命中控件的触摸落到这里,按 zl2 触摸语义分发:
+ *  - 抓取中(SLIDE,游戏内视角):手指滑动 = 光标相对移动(无起手跳变),
+ *    短按 = 单击左键,长按(>=300ms)= 按住左键(挖方块/攻击)
+ *  - 未抓取(CLICK,GUI 菜单):点哪 = 光标绝对定位,抬起未滑动 = 单击
  */
 @Composable
 fun BoxScope.TouchBridgeLayout(
-    onTouch: (x: Float, y: Float, pressed: Boolean?) -> Unit,
+    moveCursor: (x: Float, y: Float) -> Unit,
+    mouseButton: (pressed: Boolean) -> Unit,
+    isGrabbing: () -> Boolean,
+    initialCursor: () -> Offset?,
 ) {
     Box(
         Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
+                val longPressMs = 300L
+                // 虚拟光标位置(SLIDE 模式维护;初始取最近触摸点或屏幕中心)
+                var vpos = initialCursor() ?: Offset(size.width / 2f, size.height / 2f)
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    var last = down.position
-                    onTouch(down.position.x, down.position.y, true)
+                    val grabbing = isGrabbing()
+                    var lastPos = down.position
+                    var moved = false
+                    var longPressFired = false
+
+                    if (grabbing) {
+                        // SLIDE:先把光标安置在当前虚拟位置(避免起手跳变)
+                        moveCursor(vpos.x, vpos.y)
+                    } else {
+                        // CLICK:GUI 绝对定位
+                        vpos = down.position
+                        moveCursor(vpos.x, vpos.y)
+                    }
+                    // 长按判定双保险:100ms 心跳轮询(手指完全不动)+ 时间戳判定
+                    // (手指微小抖动会不断产生 MOVE 事件,单靠"事件超时"永不触发)
+                    val downTime = System.currentTimeMillis()
+                    android.util.Log.i("LmcTouch", "down at ${down.position} grabbing=$grabbing moved=false")
+                    fun maybeFireLongPress() {
+                        if (!moved && !longPressFired &&
+                            System.currentTimeMillis() - downTime >= longPressMs
+                        ) {
+                            longPressFired = true
+                            mouseButton(true)
+                            android.util.Log.i("LmcTouch", "LONGPRESS 左键按下(挖方块)")
+                        }
+                    }
                     while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull() ?: break
+                        val event = withTimeoutOrNull(100L) { awaitPointerEvent() }
+                        if (event == null) {
+                            maybeFireLongPress()
+                            continue
+                        }
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         if (!change.pressed) {
-                            onTouch(change.position.x, change.position.y, false)
+                            if (longPressFired) {
+                                mouseButton(false)
+                                android.util.Log.i("LmcTouch", "up: 长按释放")
+                            } else if (!moved) {
+                                // 短按 = 单击
+                                mouseButton(true)
+                                mouseButton(false)
+                                android.util.Log.i("LmcTouch", "up: 单击")
+                            } else {
+                                android.util.Log.i("LmcTouch", "up: 拖动结束(moved)")
+                            }
+                            lastPos = change.position
                             break
                         }
-                        if (change.position != last) {
-                            onTouch(change.position.x, change.position.y, null)
-                            last = change.position
+                        val dx = change.position.x - lastPos.x
+                        val dy = change.position.y - lastPos.y
+                        if ((dx * dx + dy * dy) > 100f) moved = true // ~10px 阈值
+                        maybeFireLongPress()
+                        if (grabbing) {
+                            vpos = Offset(
+                                (vpos.x + dx).coerceIn(0f, size.width.toFloat()),
+                                (vpos.y + dy).coerceIn(0f, size.height.toFloat()),
+                            )
+                        } else {
+                            vpos = change.position
                         }
-                        // 不消费:保持对上层(悬浮球等)友好,且不干扰控件层状态机
+                        moveCursor(vpos.x, vpos.y)
+                        lastPos = change.position
                     }
                 }
             }

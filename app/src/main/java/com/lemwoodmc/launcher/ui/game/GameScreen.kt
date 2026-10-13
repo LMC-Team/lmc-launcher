@@ -277,8 +277,13 @@ fun GameScreen(onExit: () -> Unit) {
                 opacity = controlOpacity,
                 isDark = true,
             ) {
-                // zl2 架构:触摸桥位于控件层 content 内,未命中控件的触摸转发游戏鼠标
-                TouchBridgeLayout { x, y, pressed -> vm.sendTouch(x, y, pressed) }
+                // zl2 架构 + 触摸语义:SLIDE(游戏内视角,相对滑动)/CLICK(GUI 绝对定位)
+                TouchBridgeLayout(
+                    moveCursor = vm::moveCursor,
+                    mouseButton = vm::mouseButton,
+                    isGrabbing = vm::isGrabbingNow,
+                    initialCursor = { vm.cursorPosition.value },
+                )
             }
         }
     }

@@ -261,6 +261,22 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 仅移动虚拟光标(不触发按键)——zl2 SLIDE 模式用 */
+    fun moveCursor(x: Float, y: Float) {
+        cursorPosition.value = androidx.compose.ui.geometry.Offset(x, y)
+        LmcPojavBridgeHelper.sendCursorPos(x, y)
+    }
+
+    /** 单击/长按鼠标键(zl2 触摸语义:tap=单击,长按=按住) */
+    fun mouseButton(pressed: Boolean) {
+        LmcPojavBridgeHelper.sendMouseButtonEvent(0, pressed)
+    }
+
+    /** 当前是否处于鼠标抓取(游戏内视角)模式——触摸桥据此切换 SLIDE/CLICK */
+    fun isGrabbingNow(): Boolean = runCatching {
+        LmcPojavBridgeHelper.isGrabbing()
+    }.getOrDefault(false)
+
     fun toggleControlLayer() { _controlVisible.value = !_controlVisible.value }
 
     /** 显式设置控制层可见性（悬浮球菜单的开关行用） */

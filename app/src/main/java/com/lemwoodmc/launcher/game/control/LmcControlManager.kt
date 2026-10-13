@@ -80,6 +80,9 @@ object LmcControlManager {
         onKeyEvent(event, pressed)
     }
 
+    /** 悬浮球菜单开关回调(launcher.event.switch_menu 触发,由 UI 层注入) */
+    var onSwitchMenu: (() -> Unit)? = null
+
     fun onKeyEvent(event: com.movtery.layer_controller.event.ClickEvent, pressed: Boolean) {
         val key = event.key
         when (event.type) {
@@ -90,8 +93,31 @@ object LmcControlManager {
                     isPressed = pressed,
                 )
             }
+            // zl2 launcherEvent 同构:GLFW_MOUSE_* 转鼠标事件,launcher.event.* 走启动器动作
+            com.movtery.layer_controller.event.ClickEvent.Type.LauncherEvent -> {
+                if (key.startsWith("GLFW_MOUSE_", ignoreCase = false)) {
+                    lwjglEvent(eventKey = key, isMouse = true, isPressed = pressed)
+                } else when (key) {
+                    "launcher.event.scroll_up.single" ->
+                        if (pressed) sendScroll(0f, 1f)
+                    "launcher.event.scroll_down.single" ->
+                        if (pressed) sendScroll(0f, -1f)
+                    "launcher.event.scroll_up" ->
+                        sendScroll(0f, if (pressed) 1f else 0f)
+                    "launcher.event.scroll_down" ->
+                        sendScroll(0f, if (pressed) -1f else 0f)
+                    "launcher.event.switch_menu" ->
+                        if (pressed) onSwitchMenu?.invoke()
+                    else -> {}
+                }
+            }
             else -> return
         }
+    }
+
+    /** 滚轮(zl2 launcherEvent 滚轮事件同构) */
+    private fun sendScroll(x: Float, y: Float) {
+        runCatching { com.lemwoodmc.launcher.bridge.LmcPojavBridgeHelper.sendScrollEvent(x, y) }
     }
 
     /** zl2 lwjglEvent 同构:事件键名 → GLFW 按键 */

@@ -838,3 +838,24 @@ LMC 已是一只五脏俱全的 Minecraft 启动器。
   Guide(2208 行,引导覆盖)拷入 + opt-in 编译参数修复
 - 设备布局刷新须知:checkDefaultAndRelease 只在目录空时释放,
   布局更新后需删设备 files/control_layouts 再启动
+
+## 2026-10-13:#60 触摸语义重写 + LauncherEvent 修复
+
+### 视角移动(玩家反馈"视角移动有问题")
+
+- 根因:触摸桥 DOWN 即发左键 + 绝对坐标 → 起手视角跳变 + 拖动全程误按左键
+- 修复(对齐 zl2 TouchpadLayout 双语义):
+  - SLIDE(grab,游戏内):手指滑动 = 光标**相对移动**(无跳变),长按 = 按住左键
+  - CLICK(未 grab,GUI):点哪 = 光标绝对定位,抬起 = 单击
+  - 长按判定双保险:100ms 心跳轮询(手指完全不动)+ 时间戳(抖动有事件也能触发)
+  - AwaitPointerEventScope 成员版 withTimeoutOrNull(restricted scope 限制)
+- 真机:拖动视角流畅无跳变、拖动不误挖、单击"重生"按钮生效 ✓
+
+### LauncherEvent 修复(关键功能缺失)
+
+- 根因:LmcControlManager.onKeyEvent 对 LauncherEvent **直接 return** ——
+  zl2 布局的"左键/右键/□/■"按钮(全为 launcher_event 类型)全部失效
+- 修复:zl2 launcherEvent 同构 —— GLFW_MOUSE_* 转 lwjglEvent(isMouse=true);
+  launcher.event.scroll_* 转 sendScroll;switch_menu 回调挂钩
+- **真机:左键按钮长按 2.5s → 挖掉 3 个方块(hotbar 空→3)** ✓
+  LmcTouch/LmcControl 双日志通道保留(诊断用)
