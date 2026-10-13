@@ -38,6 +38,9 @@ object NativeBridge {
      */
     external fun nativeDetectCpuTopology(): String
 
+    /** 大核数量(拓扑识别结果;0 = 未识别/同构)。供 JIT 编译线程数配置使用。 */
+    external fun nativeGetBigCoreCount(): Int
+
     /** 将当前线程（游戏主线程）绑定到大核。成功返回 true。 */
     external fun nativeBindGameThreadToBigCores(): Boolean
 

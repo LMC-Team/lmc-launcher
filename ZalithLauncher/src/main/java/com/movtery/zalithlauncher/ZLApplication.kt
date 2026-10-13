@@ -73,11 +73,13 @@ class ZLApplication : Application(), SingletonImageLoader.Factory {
                 filesDir.absolutePath,
                 cacheDir.absolutePath,
             )
-            bridge.nativeDetectCpuTopology()
-        }.onSuccess { topology ->
-            Logger.info("LMCCore", "[LMC] lmc_core 自检通过,CPU 拓扑: $topology")
+            val topology = bridge.nativeDetectCpuTopology()
+            val bigCores = bridge.nativeGetBigCoreCount()
+            "拓扑: $topology | 大核数: $bigCores"
+        }.onSuccess { summary ->
+            Logger.info("LMCCore", "[LMC] lmc_core 自检通过,$summary")
             // 直写 logcat(不依赖壳 Logger 的落盘):adb logcat -s LMCCore
-            android.util.Log.i("LMCCore", "[LMC] lmc_core 自检通过,CPU 拓扑: $topology")
+            android.util.Log.i("LMCCore", "[LMC] lmc_core 自检通过,$summary")
         }.onFailure { t ->
             Logger.error("LMCCore", "[LMC] lmc_core 自检失败", t)
             android.util.Log.e("LMCCore", "[LMC] lmc_core 自检失败", t)

@@ -135,6 +135,12 @@ Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeDetectCpuTopology(JNIEnv* 
     return env->NewStringUTF(lmc::topologyToJson(lmc::runtime().topo).c_str());
 }
 
+// 大核数量(供 JVM -XX:CICompilerCount 配置 JIT 编译线程数;0 = 未识别)
+JNIEXPORT jint JNICALL
+Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeGetBigCoreCount(JNIEnv*, jobject) {
+    return static_cast<jint>(lmc::runtime().topo.bigCpus.size());
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_lemwoodmc_launcher_bridge_NativeBridge_nativeBindGameThreadToBigCores(JNIEnv*, jobject) {
     return lmc::bindGameThreadToBigCores() ? JNI_TRUE : JNI_FALSE;

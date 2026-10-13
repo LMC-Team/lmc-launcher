@@ -185,6 +185,12 @@ abstract class Launcher(
         args.addAll(jvmArgs)
         args.add(0, "$runtimeHome/bin/java")
 
+        // ---- LMC JVM 优化(zl2-shell):JIT 编译线程数匹配大核 ----
+        // HotSpot 分层编译的 CICompilerCount 默认按 CPU 数推断(8 核→8 组),
+        // 但游戏实际负载在 4 个大核上;按大核数配置可减少编译线程争抢,
+        // 把 CPU 时间留给渲染/GC。用户显式指定或关闭分层编译时跳过。
+        applyLmcJvmTuning(args)
+
         LoggerBridge.appendTitle("JVM Args")
         val iterator = args.iterator()
         while (iterator.hasNext()) {
@@ -215,6 +221,27 @@ abstract class Launcher(
     }
 
     /**
+     * LMC JVM 参数优化:JIT 编译线程数按识别出的大核数配置。
+     *
+     * 说明:AppCDS 未启用 —— 壳默认侧载 cacio 等多个 -javaagent
+     * (CDS dumping 与 agent 冲突,lmc 核心同样会跳过该情形)。
+     */
+    private fun applyLmcJvmTuning(args: MutableList<String>) {
+        try {
+            if (args.any { it.startsWith("-XX:CICompilerCount") }) return
+            if (args.any { it == "-XX:-TieredCompilation" }) return
+            val big = com.lemwoodmc.launcher.bridge.NativeBridge.nativeGetBigCoreCount()
+            if (big <= 0) return
+            val count = big.coerceIn(2, 8) // HotSpot 要求 >= 2
+            args.add("-XX:CICompilerCount=$count")
+            args.add("-XX:-CICompilerCountPerCPU")
+            LoggerBridge.appendInfo("[LMC] JIT 编译线程数 = $count(大核 $big 个)")
+        } catch (t: Throwable) {
+            LoggerBridge.appendInfo("[LMC] JVM 优化跳过: ${t.message}")
+        }
+    }
+
+    /**
      * LMC 核心性能层接入(zl2-shell 分支)。
      *
      * 边界:仅性能层;JVM 启动链仍由 zl2(VMLauncher / pojavexec)负责,
@@ -234,6 +261,23 @@ abstract class Launcher(
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeStartThermalMonitor(80f, 8f)
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeBindGameThreadToBigCores()
             LoggerBridge.appendInfo("[LMC] 性能层已接入(音频/oom_adj/温度监控/绑大核)")
+
+            // JVM 服务线程(GC/C1/C2 编译/VM Thread 等)迁小核:
+            // 必须等 JVM 启动、线程创建完成后执行,故起延迟线程执行两轮
+            // (VMLauncher.launchJVM 阻塞运行 JVM,无法在其后同步调用)
+            Thread {
+                for (delayMs in longArrayOf(6_000L, 20_000L)) {
+                    try {
+                        Thread.sleep(delayMs)
+                        val ok = com.lemwoodmc.launcher.bridge.NativeBridge.nativeBindJvmServiceThreads()
+                        LoggerBridge.appendInfo("[LMC] JVM 服务线程迁小核: $ok")
+                    } catch (_: Throwable) {
+                    }
+                }
+            }.apply {
+                isDaemon = true
+                name = "lmc-jvm-service-rebind"
+            }.start()
         } catch (t: Throwable) {
             LoggerBridge.appendInfo("[LMC] 性能层接入失败(不影响启动): ${t.message}")
         }
