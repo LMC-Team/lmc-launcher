@@ -34,6 +34,8 @@ dependencyResolutionManagement {
 
 rootProject.name = "LMC-Zl2Shell" // zl2 壳(LMC 核心嵌入分支;lmc_core 由 ZalithLauncher 模块的 externalNativeBuild 编入)
 include(":ZalithLauncher")
+// LMC 核心性能层(C++ / liblmc_core.so),嵌入壳
+include(":lmc-core")
 include(":LWJGL")
 include(":LWJGL:patches")
 project(":LWJGL:patches").projectDir = file("LWJGL/patches")

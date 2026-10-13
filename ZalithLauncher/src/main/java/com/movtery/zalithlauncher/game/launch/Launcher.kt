@@ -202,9 +202,50 @@ abstract class Launcher(
         ZLBridge.initializeGameExitHook()
         ZLBridge.chdir(chdir())
 
+        // ---- LMC 性能层嵌入(zl2-shell):音频/内存/调度/温度 ----
+        // 顺序对齐 lmc GameViewModel:initCore → initAudio → oom_adj →
+        // 温度监控 → 启动线程绑大核(JVM 主循环随后在同线程运行,亲和性继承)
+        applyLmcPerfLayer(context)
+
         val exitCode = VMLauncher.launchJVM(args.toTypedArray())
+
+        teardownLmcPerfLayer()
         LoggerBridge.append("Java Exit code: $exitCode")
         return exitCode
+    }
+
+    /**
+     * LMC 核心性能层接入(zl2-shell 分支)。
+     *
+     * 边界:仅性能层;JVM 启动链仍由 zl2(VMLauncher / pojavexec)负责,
+     * 不启用 lmc 的自研 nativeCreateJvm。渲染环境(applyRendererEnv)因
+     * 两套渲染体系差异暂不接入,待渲染统一后再评估。
+     */
+    private fun applyLmcPerfLayer(context: Context) {
+        try {
+            val filesDir = context.filesDir
+            com.lemwoodmc.launcher.bridge.NativeBridge.nativeInitCore(
+                context.applicationInfo.nativeLibraryDir,
+                filesDir.absolutePath,
+                context.cacheDir.absolutePath,
+            )
+            com.lemwoodmc.launcher.bridge.NativeBridge.nativeInitAudio()
+            com.lemwoodmc.launcher.bridge.NativeBridge.nativeSetOomAdj(-900)
+            com.lemwoodmc.launcher.bridge.NativeBridge.nativeStartThermalMonitor(80f, 8f)
+            com.lemwoodmc.launcher.bridge.NativeBridge.nativeBindGameThreadToBigCores()
+            LoggerBridge.appendInfo("[LMC] 性能层已接入(音频/oom_adj/温度监控/绑大核)")
+        } catch (t: Throwable) {
+            LoggerBridge.appendInfo("[LMC] 性能层接入失败(不影响启动): ${t.message}")
+        }
+    }
+
+    /** LMC 性能层退出清理 */
+    private fun teardownLmcPerfLayer() {
+        try {
+            com.lemwoodmc.launcher.bridge.NativeBridge.nativeStopThermalMonitor()
+        } catch (t: Throwable) {
+            // 忽略
+        }
     }
 
     /**

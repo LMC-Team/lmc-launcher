@@ -258,6 +258,8 @@ dependencies {
     implementation(libs.editor.language.textmate)
     coreLibraryDesugaring(libs.desugar.jdk.libs)
     //Project
+    // LMC 核心性能层(嵌入)
+    implementation(project(":lmc-core"))
     implementation(project(":LayerController"))
     implementation(project(":ColorPicker"))
     implementation(project(":CardGrid"))
