@@ -270,7 +270,9 @@ fun GameScreen(onExit: () -> Unit) {
                 modifier = Modifier.fillMaxSize(),
                 observedLayout = observed,
                 eventHandler = com.lemwoodmc.launcher.game.control.LmcControlManager.eventHandler,
-                isCursorGrabbing = false,
+                // in_game 可见性层(move/control)依赖抓取状态:必须传真实 grab,
+                // 否则游戏内移动键永不显示
+                isCursorGrabbing = isGrabbing,
                 checkOccupiedPointers = { false },
                 opacity = controlOpacity,
                 isDark = true,

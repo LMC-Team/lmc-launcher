@@ -826,3 +826,15 @@ LMC 已是一只五脏俱全的 Minecraft 启动器。
   轮询(Helper 转发),grab 时隐藏光标(对齐 zl2)
 - **真机验证**:Esc 按钮 → 暂停菜单弹出 ✓;Back to Game ✓;光标可见 ✓;
   左键事件流(LmcControl 日志)✓;挖掘/hotbar ✓
+
+## 2026-10-13:in_game 层修复 + 编辑器依赖库移植(#59)
+
+- **move/control 层不渲染根因**:visibilityType=in_game 的层依赖
+  isCursorGrabbing 判定,而 ControlBoxLayout 传了硬编码 false → 游戏内
+  移动键(W/A/S/D/跳/潜)永不显示。改传真实 grab 状态(300ms 轮询)
+  后全部显示并可用(真机:长按 W 前进 ✓,LmcControl 日志
+  GLFW_KEY_W pressed=true/false 双证)
+- **编辑器依赖库移植**:ColorPicker(659 行,取色器)BUILD SUCCESSFUL;
+  Guide(2208 行,引导覆盖)拷入 + opt-in 编译参数修复
+- 设备布局刷新须知:checkDefaultAndRelease 只在目录空时释放,
+  布局更新后需删设备 files/control_layouts 再启动
