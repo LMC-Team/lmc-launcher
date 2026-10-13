@@ -60,6 +60,11 @@ import java.util.TimeZone
 
 private const val TAG = "Launcher"
 
+// ---- LMC 温度预警状态(zl2-shell,文件级:等价静态)----
+private var lmcThermalAlertRegistered = false
+private var lmcLastThermalAlertAt = 0L
+private const val LMC_THERMAL_ALERT_COOLDOWN_MS = 30_000L
+
 abstract class Launcher(
     val onExit: (code: Int, isSignal: Boolean) -> Unit,
     val openPath: (folder: File) -> Unit
@@ -221,6 +226,33 @@ abstract class Launcher(
     }
 
     /**
+     * LMC 温度预警 → 壳内提示。
+     *
+     * lmc 核心的热监控(80°C 阈值)会预测"未来 horizon 秒内越过阈值"并按
+     * severity 分级(0 提醒/1 建议降分辨率/2 强制降频);此处转为 Toast 提示,
+     * 让玩家可见;同一时间段用冷却避免刷屏。全局只注册一次(游戏多次启动)。
+     */
+    private fun setupLmcThermalAlert() {
+        if (lmcThermalAlertRegistered) return
+        lmcThermalAlertRegistered = true
+        com.lemwoodmc.launcher.bridge.NativeBridge.addThermalListener { predictedC, horizonSec, severity ->
+            val now = System.currentTimeMillis()
+            if (now - lmcLastThermalAlertAt < LMC_THERMAL_ALERT_COOLDOWN_MS) return@addThermalListener
+            lmcLastThermalAlertAt = now
+            val level = when (severity) {
+                2 -> "严重"
+                1 -> "预警"
+                else -> "提醒"
+            }
+            val msg = "[LMC] 设备温度$level:预测 ${predictedC.toInt()}°C(未来 ${horizonSec}s 越阈)"
+            LoggerBridge.appendInfo(msg)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(GlobalContext, msg, android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
      * LMC JVM 参数优化:JIT 编译线程数按识别出的大核数配置。
      *
      * 说明:AppCDS 未启用 —— 壳默认侧载 cacio 等多个 -javaagent
@@ -260,6 +292,8 @@ abstract class Launcher(
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeSetOomAdj(-900)
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeStartThermalMonitor(80f, 8f)
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeBindGameThreadToBigCores()
+            // 温度预警接壳内提示(Toast + 壳日志,30s 冷却防刷屏)
+            setupLmcThermalAlert()
             LoggerBridge.appendInfo("[LMC] 性能层已接入(音频/oom_adj/温度监控/绑大核)")
 
             // JVM 服务线程(GC/C1/C2 编译/VM Thread 等)迁小核:
