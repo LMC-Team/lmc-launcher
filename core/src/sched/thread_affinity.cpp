@@ -31,6 +31,14 @@ bool bindGameThreadToBigCores() {
         LOGI("拓扑不可用，跳过主线程绑核");
         return true;
     }
+    // 防呆护栏:大核簇只有 1 颗核 = 大概率误判(如旧频率阈值把 SM8250
+    // 中核漏判,游戏线程被绑死单核,热节流时帧率崩塌 1fps vs 130fps)。
+    // 真实 SoC 的性能簇至少 2 颗(2+6/1+3+4/4+4),单核一律拒绝绑核。
+    if (topo.bigCpus.size() < 2) {
+        LOGW("大核簇仅 %d 颗(%s),疑似误判,跳过主线程绑核",
+             static_cast<int>(topo.bigCpus.size()), joinCpus(topo.bigCpus).c_str());
+        return true;
+    }
     // 0 表示调用线程自身
     const bool ok = bindThreadToCpus(0, topo.bigCpus);
     if (ok) g_gameThreadTid.store(static_cast<int>(gettid()), std::memory_order_relaxed);
