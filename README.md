@@ -63,8 +63,11 @@ JAVA_HOME=<jdk21> sh gradlew -Darch=arm64 :ZalithLauncher:assembleBenchmark
 1. ~~大核判定在 SD870 上失效~~ **已修复**:改为 cpu_capacity 优先
    (最低簇=小核,其余全大核;频率兜底),并加护栏——大核簇 <2 颗拒绝绑核。
    实测修复后热态 1 fps → 95-114 fps(详见报告 §7.3)。
-2. `oom_score_adj` 非 root 无法写负值(SELinux),该优化实际为 no-op。
-3. CI 的 `actions/checkout@v4`、`setup-java@v4` 有 Node 20 弃用告警,待升级 v5+。
+2. **主线程绑核默认关闭(2026-10-14)**:柠枺 1.5h 实测探图(连续区块
+   生成)趴在 17-18 fps——绑核使 Client 常驻性能核、区块 Worker 被挤到
+   小核。绑核改为 `lmc_bind` 标记选用,待"整体迁移策略"后再评估(报告 §8)。
+3. `oom_score_adj` 非 root 无法写负值(SELinux),该优化实际为 no-op。
+4. CI 的 `actions/checkout@v4`、`setup-java@v4` 有 Node 20 弃用告警,待升级 v5+。
 
 ## 文档索引
 

@@ -305,13 +305,27 @@ abstract class Launcher(
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeInitAudio()
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeSetOomAdj(-900)
             com.lemwoodmc.launcher.bridge.NativeBridge.nativeStartThermalMonitor(80f, 8f)
-            com.lemwoodmc.launcher.bridge.NativeBridge.nativeBindGameThreadToBigCores()
+            // 游戏主线程绑大核:默认关闭(2026-10-14 真机实证,SM8250):
+            // 绑核使 Client 线程常驻性能核,探图时区块 Worker/Server 线程
+            // 被 EAS 挤到小核 → 飞行加载持续 17fps(lmc 关/原版无此坑);
+            // 凉机静态场景绑核仅 +5%(611 vs 583),收益远小于风险。
+            // 需要时在应用外部私有目录放置 lmc_bind 标记启用。
+            val bindFlag = listOfNotNull(
+                context.getExternalFilesDir(null)?.let { java.io.File(it, "lmc_bind") },
+                java.io.File(context.filesDir, "lmc_bind"),
+            ).firstOrNull { it.exists() }
+            if (bindFlag != null) {
+                com.lemwoodmc.launcher.bridge.NativeBridge.nativeBindGameThreadToBigCores()
+                LoggerBridge.appendInfo("[LMC] 主线程绑大核:启用(lmc_bind)")
+            } else {
+                LoggerBridge.appendInfo("[LMC] 主线程绑核默认关闭(放置 lmc_bind 可启用)")
+            }
             // 温度预警接壳内提示(Toast + 壳日志,30s 冷却防刷屏)
             setupLmcThermalAlert()
             // 周期性写出运行状态文件(供启动器主进程的"LMC 核心状态"面板读取:
             // 游戏运行在 :game 独立进程,native 静态状态不跨进程共享)
             startLmcStatusWriter(context)
-            LoggerBridge.appendInfo("[LMC] 性能层已接入(音频/oom_adj/温度监控/绑大核)")
+            LoggerBridge.appendInfo("[LMC] 性能层已接入(音频/oom_adj/温度监控;绑核默认关)")
 
             // JVM 服务线程(GC/C1/C2 编译/VM Thread 等)迁小核:
             // 必须等 JVM 启动、线程创建完成后执行,故起延迟线程执行两轮
